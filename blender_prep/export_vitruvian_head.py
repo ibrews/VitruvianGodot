@@ -63,7 +63,7 @@ bmesh.ops.delete(bm, geom=[v for v in bm.verts if v.co.z < NECK_CUT_Z], context=
 # Scalp cap (dark) under the hair part.
 bm.faces.ensure_lookup_table(); bm.normal_update()
 scalp_src = [f for f in bm.faces if f.material_index == SKIN
-             and f.calc_center_median().z >= 1.655 and f.calc_center_median().y > -0.05]
+             and f.calc_center_median().z >= 1.645 and f.calc_center_median().y > -0.065]
 dup = bmesh.ops.duplicate(bm, geom=scalp_src)
 for el in dup["geom"]:
     if isinstance(el, bmesh.types.BMFace):
@@ -120,21 +120,13 @@ for so in src.values():
     bpy.data.objects.remove(so, do_unlink=True)
 print("[export] placed", len(eye_objs), "eye objects")
 
-# Eyebrow groom.
-with bpy.data.libraries.load(EYEBROWS_BLEND) as (s, dst):
-    dst.objects = ["Vitruvian-EyeBrows"]
-brow = None
-for o in dst.objects:
-    if o:
-        bpy.context.scene.collection.objects.link(o); brow = o
-if brow:
-    brow.data.materials.clear()
-    brow.data.materials.append(bpy.data.materials.new("VitBrows"))
+# NOTE: eyebrows are now built as alpha CARDS in build_vitruvian_hair.py (from the
+# eyebrow guide-strand npz), not the flat Vitruvian-EyeBrows mesh — so we no longer
+# append it here.
 
-# Export head + eyebrows + eyes.
+# Export head + eyes.
 bpy.ops.object.select_all(action='DESELECT')
 obj.select_set(True)
-if brow: brow.select_set(True)
 for d in eye_objs: d.select_set(True)
 bpy.context.view_layer.objects.active = obj
 glb = os.path.join(OUT, "vitruvian_head.glb")

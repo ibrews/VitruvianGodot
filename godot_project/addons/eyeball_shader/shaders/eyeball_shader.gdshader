@@ -46,6 +46,15 @@ uniform uint iris_cells_num_octaves = 1;
 uniform float iris_cells_lacunarity = 2;
 uniform float iris_cells_weighted_strength = .5;
 
+group_uniforms surface;
+// Agile Lens additions: the stock shader writes only ALBEDO (fully rough, flat).
+// Give the eyeball a wet glossy surface + radial sclera shading so the whites
+// aren't a flat disc.
+uniform float eyeball_roughness:hint_range(0.0, 1.0, 0.01) = 0.28;
+uniform float eyeball_specular:hint_range(0.0, 1.0, 0.01) = 0.6;
+uniform float sclera_shade:hint_range(0.0, 1.0, 0.01) = 0.45;
+uniform vec3 sclera_edge_tint:source_color = vec3(0.86, 0.74, 0.66);
+
 group_uniforms other;
 uniform uint rand_seed;
 
@@ -75,6 +84,15 @@ void fragment() {
 	
 	col = mix(pupil_color, col, smoothstep(0, 1, (radial_offset - pupil_radius) / iris_margin));
 
+	// Sclera shading: only the white beyond the iris. Darken toward the rim and
+	// warm-tint the very edge (corner-of-eye occlusion / vascular warmth) so the
+	// whites read with depth instead of flat.
+	float scl = smoothstep(iris_radius, 1.0, radial_offset);
+	if (radial_offset > iris_radius) {
+		col *= mix(1.0, 1.0 - sclera_shade, scl);
+		col = mix(col, col * sclera_edge_tint, scl * 0.6);
+	}
+
 	if (radial_offset >= pupil_radius && radial_offset <= iris_radius) {
 		vec4 dodge_col = texture(texture_iris_ring_dodge, vec2((radial_offset - pupil_radius) / (iris_radius - pupil_radius), 0.0));
 		vec4 mult_col = texture(texture_iris_ring_mult, vec2((radial_offset - pupil_radius) / (iris_radius - pupil_radius), 0.0));
@@ -84,4 +102,7 @@ void fragment() {
 	}
 	
 	ALBEDO = col;
+	ROUGHNESS = eyeball_roughness;
+	SPECULAR = eyeball_specular;
+	METALLIC = 0.0;
 }

@@ -37,9 +37,9 @@ No MetaHuman / Epic assets are used. This demo is fully EULA-free."""
 
 # ── Held live references (slider callbacks poke these) ──────────────────────
 var skin_mats: Array[ShaderMaterial] = []
-var vit_hair_mat: StandardMaterial3D
+var vit_hair_mat: ShaderMaterial      # hair_card.gdshader (alpha strand atlas)
 var vit_scalp_mat: StandardMaterial3D
-var vit_brow_mat: StandardMaterial3D
+var vit_brow_mat: ShaderMaterial      # hair_card.gdshader (eyebrow cards)
 
 var key_light: DirectionalLight3D
 var fill_light: DirectionalLight3D
@@ -354,7 +354,6 @@ func _load_and_wire() -> bool:
 				"VitCornea":  mi.set_surface_override_material(s, _make_cornea())
 				"VitMouth":   mi.set_surface_override_material(s, _make_mouth())
 				"VitScalp":   mi.set_surface_override_material(s, _make_scalp())
-				"VitBrows":   mi.set_surface_override_material(s, _make_brows())
 				_:            pass
 
 	if ResourceLoader.exists(HAIR_GLB):
@@ -366,8 +365,10 @@ func _load_and_wire() -> bool:
 			var hmeshes: Array[MeshInstance3D] = []
 			_collect_meshes(hair, hmeshes)
 			for hm in hmeshes:
+				var is_brow: bool = hm.name.begins_with("VitBrow")
+				var hmat: ShaderMaterial = _make_browcards() if is_brow else _make_hair()
 				for s in range(hm.mesh.get_surface_count()):
-					hm.set_surface_override_material(s, _make_hair())
+					hm.set_surface_override_material(s, hmat)
 	return true
 
 
@@ -474,27 +475,31 @@ func _make_scalp() -> StandardMaterial3D:
 	return vit_scalp_mat
 
 
-func _make_brows() -> StandardMaterial3D:
-	vit_brow_mat = StandardMaterial3D.new()
-	vit_brow_mat.albedo_color = Color(0.085, 0.060, 0.042)
-	vit_brow_mat.roughness = 0.68
-	vit_brow_mat.metallic = 0.0
-	vit_brow_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-	return vit_brow_mat
+func _make_hair_card(color: Color, threshold: float, root_dark: float, rough: float) -> ShaderMaterial:
+	# Alpha-clipped hair-card shader reading the procedural strand atlas (R channel).
+	var mat: ShaderMaterial = ShaderMaterial.new()
+	mat.shader = load("res://scenes/hair_card.gdshader") as Shader
+	mat.set_shader_parameter("hair_color", color)
+	mat.set_shader_parameter("coverage_atlas", _tex("res://vit_hair_atlas.png"))
+	mat.set_shader_parameter("use_red_mask", true)
+	mat.set_shader_parameter("invert_mask", false)
+	mat.set_shader_parameter("alpha_threshold", threshold)
+	mat.set_shader_parameter("root_darkening", root_dark)
+	mat.set_shader_parameter("roughness_val", rough)
+	mat.set_shader_parameter("specular_val", 0.35)
+	return mat
 
 
-func _make_hair() -> StandardMaterial3D:
-	# One shared material instance so the hair-color slider drives every strand.
+func _make_hair() -> ShaderMaterial:
 	if vit_hair_mat == null:
-		vit_hair_mat = StandardMaterial3D.new()
-		vit_hair_mat.albedo_color = Color(0.055, 0.040, 0.028)
-		vit_hair_mat.roughness = 0.55
-		vit_hair_mat.metallic = 0.0
-		vit_hair_mat.metallic_specular = 0.35
-		vit_hair_mat.anisotropy_enabled = true
-		vit_hair_mat.anisotropy = 0.8
-		vit_hair_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+		vit_hair_mat = _make_hair_card(Color(0.09, 0.064, 0.045), 0.10, 0.55, 0.6)
 	return vit_hair_mat
+
+
+func _make_browcards() -> ShaderMaterial:
+	if vit_brow_mat == null:
+		vit_brow_mat = _make_hair_card(Color(0.12, 0.085, 0.055), 0.12, 0.45, 0.7)
+	return vit_brow_mat
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -705,10 +710,10 @@ func _build_ui() -> void:
 
 	# ── HAIR ──
 	_hdr(vb, "Hair")
-	_mkcolor(vb, "hair_color", "hair color", Color("0e0a07"), func(c): if vit_hair_mat: vit_hair_mat.albedo_color = c)
+	_mkcolor(vb, "hair_color", "hair color", Color("19120c"), func(c): if vit_hair_mat: vit_hair_mat.set_shader_parameter("hair_color", c))
 	_mkcolor(vb, "scalp_color", "scalp color", Color("0b0806"), func(c): if vit_scalp_mat: vit_scalp_mat.albedo_color = c)
-	_mkcolor(vb, "brow_color", "eyebrow color", Color("160f0a"), func(c): if vit_brow_mat: vit_brow_mat.albedo_color = c)
-	_mkslider(vb, "hair_rough", "hair roughness", 0.0, 1.0, 0.01, 0.55, func(v): if vit_hair_mat: vit_hair_mat.roughness = v)
+	_mkcolor(vb, "brow_color", "eyebrow color", Color("1f160e"), func(c): if vit_brow_mat: vit_brow_mat.set_shader_parameter("hair_color", c))
+	_mkslider(vb, "hair_threshold", "hair density", 0.02, 0.6, 0.005, 0.10, func(v): if vit_hair_mat: vit_hair_mat.set_shader_parameter("alpha_threshold", v))
 
 	# ── CAMERA / DOF ──
 	_hdr(vb, "Camera / DOF")
