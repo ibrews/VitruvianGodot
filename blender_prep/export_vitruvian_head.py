@@ -1,25 +1,27 @@
-# Vitruvian head finished pass v3 — fixes blank-white eyes by splitting the eye
-# by ORIGINAL material index and dropping the clear cornea/aqueous shells that
-# occlude the iris. Surfaces: skin, sclera, mouth, iris, pupil (+ eyebrow mesh).
+# Vitruvian head export v5 — REAL-TIME REBUILD per researched plan.
+# Skin (Game_Pack bake comes separately), mouth, scalp cap, eyebrow groom, and a
+# proper real-time EYE: delete Vitruvian's Cycles refraction eye stack entirely
+# and drop in blackears' radial-UV eyeball + cornea spheres (procedural iris in
+# the Godot shader → no iris-texture occlusion / walleye problems).
 #
-# Original eye material indices (config order): 3=AqueosLayer 4=Pupil
-# 5=Sclera_Cornea 6=Iris. The frontal cap of 5 (center.y > CORNEA_Y) is the clear
-# cornea dome → delete; the rest of 5 is the white sclera bowl → keep.
+# Run: blender --background char.blend --python export_vitruvian_head.py
 import bpy, bmesh, os, math
 import numpy as np
+from mathutils import Vector
 
-OUT = "H:/Work01/MetaHumanGodot/out/vitruvian_spike"
-os.makedirs(OUT, exist_ok=True)
+OUT = "H:/Work01/VitruvianGodot/godot_project"   # write straight into the repo
 VDIR = os.path.dirname(bpy.data.filepath)
 DATA = os.path.join(VDIR, "textures", "4K")
 EYEBROWS_BLEND = os.path.join(VDIR, "eyebrows.blend")
+EYEBALL_GLB = "H:/Work01/VitruvianGodot/blender_prep/eyeball_src.glb"
 NECK_CUT_Z = 1.49
 TEX_SIZE = 2048
 SKIN_TONE = 0.45
-# Camera-facing front is -Y (verified empirically). Keep the full sclera sphere
-# (white eyeball); drop only the clear aqueous layer; push iris+pupil toward the
-# camera (-Y) so they sit proud of the eyeball and read as a real iris.
-IRIS_PUSH = -0.016
+# Eye sockets (probed): centers + radius, face-forward = -Y.
+SOCKETS = {"L": Vector((-0.0335, -0.0531, 1.6344)), "R": Vector((0.0335, -0.0531, 1.6344))}
+EYE_R = 0.0125            # human eyeball ≈ 12mm radius
+EYE_RECESS = 0.0025       # nudge +Y (away from camera) so it sits behind the lids
+IRIS_FWD = Vector((0.0, -1.0, 0.0))   # iris should face the camera (-Y)
 
 obj = bpy.data.objects["cm_vitruvian"]
 for m in list(obj.modifiers):
@@ -32,81 +34,94 @@ for uv in uvs:
     uv.active_render = (uv.name == udim)
 me = obj.data
 
-# Snapshot ORIGINAL per-poly material index (encodes Aqueous/Pupil/Cornea/Iris).
-orig_idx = [p.material_index for p in me.polygons]
-centers = [p.center.copy() for p in me.polygons]
-
-# New slots: 0 skin, 1 sclera, 2 mouth, 3 iris, 4 pupil, 5 = DELETE marker.
+# Material slots: 0 skin, 1 mouth, 2 scalp, 3 = DELETE (eyes).
 me.materials.clear()
-for nm in ("VitSkin", "VitSclera", "VitMouth", "VitIris", "VitPupil", "VitDelete", "VitScalp"):
+for nm in ("VitSkin", "VitMouth", "VitScalp", "VitDelete"):
     me.materials.append(bpy.data.materials.new(nm))
-SCALP = 6
+SKIN, MOUTH, SCALP, DEL = 0, 1, 2, 3
 uvl = me.uv_layers[udim].data
-DEL = 5
-for i, poly in enumerate(me.polygons):
+for poly in me.polygons:
     u, v = uvl[poly.loop_indices[0]].uv
     tile = 1001 + int(math.floor(u)) + 10 * int(math.floor(v))
-    oi = orig_idx[i]
-    slot = 0
     if tile == 1001:
-        slot = 0
+        poly.material_index = SKIN
     elif tile == 1006:
-        slot = 2
-    elif tile == 1007:
-        slot = 3  # iris
-    elif tile == 1005:
-        if oi == 3:           # AqueosLayer → drop (clear fluid)
-            slot = DEL
-        elif oi == 4:         # Pupil
-            slot = 4
-        elif oi == 5:         # Sclera_Cornea → keep whole as white eyeball
-            slot = 1
-        else:
-            slot = 1
-    poly.material_index = slot
+        poly.material_index = MOUTH
+    elif tile in (1005, 1007):
+        poly.material_index = DEL   # all Vitruvian eye geometry → delete
+    else:
+        poly.material_index = SKIN
 
-# Delete cornea/aqueous faces, then loose verts, then the body below the neck.
+# Delete eye faces + loose verts + body below neck.
 bm = bmesh.new(); bm.from_mesh(me)
 bm.faces.ensure_lookup_table()
-del_faces = [f for f in bm.faces if f.material_index == DEL]
-bmesh.ops.delete(bm, geom=del_faces, context='FACES')
+bmesh.ops.delete(bm, geom=[f for f in bm.faces if f.material_index == DEL], context='FACES')
 bm.verts.ensure_lookup_table()
-loose = [v for v in bm.verts if not v.link_faces]
-bmesh.ops.delete(bm, geom=loose, context='VERTS')
+bmesh.ops.delete(bm, geom=[v for v in bm.verts if not v.link_faces], context='VERTS')
 bm.verts.ensure_lookup_table()
 bmesh.ops.delete(bm, geom=[v for v in bm.verts if v.co.z < NECK_CUT_Z], context='VERTS')
-# Scalp cap: duplicate the upper-scalp skin faces, inflate along normals, and
-# tag them VitScalp (dark) so the bald scalp doesn't show through the hair part.
-bm.faces.ensure_lookup_table()
-bm.normal_update()
-# Crown/back/top scalp (camera-front is -Y; forehead is low Y → exclude it so we
-# don't darken the brow). Covers the hair-bearing dome.
-scalp_src = [f for f in bm.faces if f.material_index == 0
-             and f.calc_center_median().z >= 1.655
-             and f.calc_center_median().y > -0.05]
+# Scalp cap (dark) under the hair part.
+bm.faces.ensure_lookup_table(); bm.normal_update()
+scalp_src = [f for f in bm.faces if f.material_index == SKIN
+             and f.calc_center_median().z >= 1.655 and f.calc_center_median().y > -0.05]
 dup = bmesh.ops.duplicate(bm, geom=scalp_src)
 for el in dup["geom"]:
     if isinstance(el, bmesh.types.BMFace):
         el.material_index = SCALP
-        for v in el.verts:
-            v.co += v.normal * 0.003
+        for vv in el.verts:
+            vv.co += vv.normal * 0.003
 bm.to_mesh(me); bm.free(); me.update()
-print("[export] head verts:", len(me.vertices), "polys:", len(me.polygons), "scalp faces:", len(scalp_src))
+print("[export] head verts:", len(me.vertices), "polys:", len(me.polygons))
 
-# Nudge iris (slot 3) + pupil (slot 4) forward into the opened aperture so they
-# sit proud of the sclera rim and read from the front.
-iris_pupil_verts = set()
-for poly in me.polygons:
-    if poly.material_index in (3, 4):
-        for vi in poly.vertices:
-            iris_pupil_verts.add(vi)
-for vi in iris_pupil_verts:
-    me.vertices[vi].co.y += IRIS_PUSH
-me.update()
-print("[export] pushed %d iris/pupil verts forward by %.3f" % (len(iris_pupil_verts), IRIS_PUSH))
+# ---- place blackears eyeballs ----
+bpy.ops.import_scene.gltf(filepath=EYEBALL_GLB)
+src = {}
+for o in list(bpy.context.selected_objects):
+    # NOTE: skip "eyeball_back" — it's coincident (r=1.0) with "eyeball" and
+    # z-fights, blanking one eye white. The open back is hidden in the socket.
+    if o.type == 'MESH' and o.name in ("eyeball", "cornea"):
+        # bake import rotation + scale into mesh data so local co is final-oriented
+        bpy.ops.object.select_all(action='DESELECT')
+        o.select_set(True); bpy.context.view_layer.objects.active = o
+        bpy.ops.object.transform_apply(location=False, rotation=True, scale=True)
+        src[o.name] = o
+# iris-front axis from the eyeball's UV(0.5,0.5) vertex
+eb = src["eyeball"]; ebme = eb.data
+iris_axis = None; bestd = 9.0
+uvl2 = ebme.uv_layers.active.data
+for poly in ebme.polygons:
+    for li in poly.loop_indices:
+        uv = uvl2[li].uv
+        d = (uv.x - 0.5) ** 2 + (uv.y - 0.5) ** 2
+        if d < bestd:
+            bestd = d; iris_axis = ebme.vertices[ebme.loops[li].vertex_index].co.normalized()
+print("[export] eyeball iris axis (local):", tuple(round(c, 2) for c in iris_axis))
+rot_q = iris_axis.rotation_difference(IRIS_FWD)
 
-# Append eyebrow groom.
-with bpy.data.libraries.load(EYEBROWS_BLEND) as (src, dst):
+# ONE shared material datablock per type — else Blender auto-suffixes the second
+# eye's material to "VitEyeball.001" and Godot's name match misses it (→ white eye).
+eye_mat_obj = {"eyeball": bpy.data.materials.new("VitEyeball"),
+               "cornea": bpy.data.materials.new("VitCornea")}
+eye_objs = []
+for side, center in SOCKETS.items():
+    for nm, so in src.items():
+        d = so.copy(); d.data = so.data.copy()
+        bpy.context.scene.collection.objects.link(d)
+        d.name = "Eye_%s_%s" % (side, nm)
+        d.rotation_mode = 'QUATERNION'
+        d.rotation_quaternion = rot_q
+        d.scale = (EYE_R, EYE_R, EYE_R)
+        d.location = center + Vector((0.0, EYE_RECESS, 0.0))
+        d.data.materials.clear()
+        d.data.materials.append(eye_mat_obj[nm])
+        eye_objs.append(d)
+# remove the import originals
+for so in src.values():
+    bpy.data.objects.remove(so, do_unlink=True)
+print("[export] placed", len(eye_objs), "eye objects")
+
+# Eyebrow groom.
+with bpy.data.libraries.load(EYEBROWS_BLEND) as (s, dst):
     dst.objects = ["Vitruvian-EyeBrows"]
 brow = None
 for o in dst.objects:
@@ -116,9 +131,11 @@ if brow:
     brow.data.materials.clear()
     brow.data.materials.append(bpy.data.materials.new("VitBrows"))
 
+# Export head + eyebrows + eyes.
 bpy.ops.object.select_all(action='DESELECT')
 obj.select_set(True)
 if brow: brow.select_set(True)
+for d in eye_objs: d.select_set(True)
 bpy.context.view_layer.objects.active = obj
 glb = os.path.join(OUT, "vitruvian_head.glb")
 bpy.ops.export_scene.gltf(filepath=glb, export_format='GLB', use_selection=True,
@@ -126,7 +143,7 @@ bpy.ops.export_scene.gltf(filepath=glb, export_format='GLB', use_selection=True,
     export_normals=True, export_tangents=True, export_texcoords=True)
 print("[export] wrote", glb)
 
-# ---- textures (same as v2) ----
+# ---- textures (skin + mouth; eyes are procedural now) ----
 import zlib, struct
 def _chunk(tag, data):
     return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xffffffff)
@@ -140,7 +157,7 @@ def exr(path, size):
     return px
 def lin2srgb(c):
     a = 0.055
-    return np.where(c <= 0.0031308, c * 12.92, (1 + a) * np.power(np.clip(c, 0, None), 1/2.4) - a)
+    return np.where(c <= 0.0031308, c * 12.92, (1 + a) * np.power(np.clip(c, 0, None), 1 / 2.4) - a)
 def save_png(arr, path, srgb):
     rgb = np.clip(arr[..., :3], 0, 1)
     if srgb: rgb = lin2srgb(rgb)
@@ -151,19 +168,17 @@ def save_png(arr, path, srgb):
     with open(path, "wb") as f:
         f.write(b"\x89PNG\r\n\x1a\n" + _chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
                 + _chunk(b"IDAT", zlib.compress(raw, 6)) + _chunk(b"IEND", b""))
-    print("[tex] wrote", os.path.basename(path), w, "x", h, "mean", round(float(u8.mean()), 1))
+    print("[tex] wrote", os.path.basename(path), w, "x", h)
 
 light = exr(os.path.join(DATA, "skin_light_col.1001.exr"), TEX_SIZE)
-dark  = exr(os.path.join(DATA, "skin_dark_col.1001.exr"), TEX_SIZE)
+dark = exr(os.path.join(DATA, "skin_dark_col.1001.exr"), TEX_SIZE)
 save_png(light * (1 - SKIN_TONE) + dark * SKIN_TONE, os.path.join(OUT, "vit_face_bc.png"), True)
 crc = exr(os.path.join(DATA, "skin_cavity_rough_coat.1001.exr"), TEX_SIZE)
 save_png(np.repeat(crc[..., 1:2], 3, 2), os.path.join(OUT, "vit_face_rough.png"), False)
 disp = exr(os.path.join(DATA, "skin_disp.1001.exr"), TEX_SIZE)[..., 0]
 gy, gx = np.gradient(disp.astype(np.float32))
 nx, ny, nz = -gx * 6.0, -gy * 6.0, np.ones_like(disp)
-ln = np.sqrt(nx*nx + ny*ny + nz*nz)
-save_png(np.dstack([nx/ln*0.5+0.5, ny/ln*0.5+0.5, nz/ln*0.5+0.5]), os.path.join(OUT, "vit_face_n.png"), False)
-save_png(exr(os.path.join(DATA, "sclera_col.1005.exr"), 1024), os.path.join(OUT, "vit_sclera.png"), True)
-save_png(exr(os.path.join(DATA, "iris_col.1007.exr"), 1024), os.path.join(OUT, "vit_iris.png"), True)
+ln = np.sqrt(nx * nx + ny * ny + nz * nz)
+save_png(np.dstack([nx / ln * 0.5 + 0.5, ny / ln * 0.5 + 0.5, nz / ln * 0.5 + 0.5]), os.path.join(OUT, "vit_face_n.png"), False)
 save_png(exr(os.path.join(DATA, "mouth_col.1006.exr"), 1024), os.path.join(OUT, "vit_mouth.png"), True)
 print("[export] DONE")

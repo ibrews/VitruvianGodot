@@ -4,9 +4,12 @@ This repository mixes two licenses, kept deliberately separate so the whole
 thing is clean for closed-source / commercial / cloud-render use.
 
 ## Tool code & shaders — MIT
-See `LICENSE`. © 2026 Agile Lens. The skin/eye shaders derive from
+See `LICENSE`. © 2026 Agile Lens. The skin shader derives from
 **MatMADNESS HumanShaders** (MIT), which build on
-RustyRoboticsBV/GodotStandardLightShader.
+RustyRoboticsBV/GodotStandardLightShader. The procedural **eye** shaders
+(`addons/eyeball_shader/`) are **blackears/godot_eyeball_shader** by Mark McKay
+(MIT, © 2024), lightly modified (added a cornea specular intensity/alpha clamp);
+its own MIT license is kept at `godot_project/addons/eyeball_shader/LICENSE.txt`.
 
 ## Character assets — CC0 (public domain)
 `godot_project/vitruvian_head.glb` and the `vit_*.png` textures are derived from

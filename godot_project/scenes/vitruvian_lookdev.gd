@@ -304,7 +304,7 @@ func _setup_lights() -> void:
 
 	catch_light = OmniLight3D.new()
 	catch_light.name = "CatchLight"
-	catch_light.light_energy = 0.22
+	catch_light.light_energy = 0.12
 	catch_light.light_specular = 1.0
 	catch_light.light_color = Color(1.0, 0.98, 0.95)
 	catch_light.omni_range = 1.2
@@ -345,15 +345,17 @@ func _load_and_wire() -> bool:
 		var mesh: Mesh = mi.mesh
 		for s in range(mesh.get_surface_count()):
 			var m: Material = mesh.surface_get_material(s)
-			var nm: String = m.resource_name if m else ""
+			# Match by PREFIX — glTF/Blender may append ".001" to duplicated
+			# material names (this silently blanked the 2nd eye before).
+			var nm: String = (m.resource_name if m else "").split(".")[0]
 			match nm:
-				"VitSkin":   mi.set_surface_override_material(s, _make_skin())
-				"VitSclera": mi.set_surface_override_material(s, _make_sclera())
-				"VitIris":   mi.set_surface_override_material(s, _make_iris())
-				"VitMouth":  mi.set_surface_override_material(s, _make_mouth())
-				"VitPupil":  mi.set_surface_override_material(s, _make_pupil())
-				"VitScalp":  mi.set_surface_override_material(s, _make_scalp())
-				_:           pass
+				"VitSkin":    mi.set_surface_override_material(s, _make_skin())
+				"VitEyeball": mi.set_surface_override_material(s, _make_eyeball())
+				"VitCornea":  mi.set_surface_override_material(s, _make_cornea())
+				"VitMouth":   mi.set_surface_override_material(s, _make_mouth())
+				"VitScalp":   mi.set_surface_override_material(s, _make_scalp())
+				"VitBrows":   mi.set_surface_override_material(s, _make_brows())
+				_:            pass
 
 	if ResourceLoader.exists(HAIR_GLB):
 		var hairscene: PackedScene = load(HAIR_GLB)
@@ -414,42 +416,45 @@ func _make_skin() -> ShaderMaterial:
 	return mat
 
 
-func _make_sclera() -> StandardMaterial3D:
-	var m: StandardMaterial3D = StandardMaterial3D.new()
-	m.albedo_texture = _tex("res://vit_sclera.png")
-	m.albedo_color = Color(1, 1, 1)
-	m.roughness = 0.4
-	m.metallic = 0.0
-	m.metallic_specular = 0.45
-	m.clearcoat_enabled = true
-	m.clearcoat = 0.35
-	m.clearcoat_roughness = 0.08
-	m.cull_mode = BaseMaterial3D.CULL_DISABLED
-	return m
+func _iris_ramp() -> GradientTexture1D:
+	# Iris fibre colour ramp (sampled by the procedural voronoi luminance).
+	var g: Gradient = Gradient.new()
+	g.set_color(0, Color(0.05, 0.035, 0.02))    # dark fibres
+	g.add_point(0.5, Color(0.32, 0.20, 0.09))   # mid amber-brown
+	g.set_color(1, Color(0.55, 0.40, 0.20))     # bright limbal
+	var t: GradientTexture1D = GradientTexture1D.new()
+	t.gradient = g
+	t.width = 256
+	return t
 
 
-func _make_iris() -> StandardMaterial3D:
-	var m: StandardMaterial3D = StandardMaterial3D.new()
-	m.albedo_texture = _tex("res://vit_iris.png")
-	m.albedo_color = Color(1, 1, 1)
-	m.roughness = 0.45
-	m.metallic = 0.0
-	m.metallic_specular = 0.35
-	m.clearcoat_enabled = true
-	m.clearcoat = 0.4
-	m.clearcoat_roughness = 0.08
-	m.cull_mode = BaseMaterial3D.CULL_DISABLED
-	return m
+func _make_eyeball() -> ShaderMaterial:
+	# Procedural iris/pupil/sclera (blackears eyeball_shader, MIT) — radial UV.
+	var mat: ShaderMaterial = ShaderMaterial.new()
+	mat.shader = load("res://addons/eyeball_shader/shaders/eyeball_shader.gdshader") as Shader
+	mat.set_shader_parameter("iris_radius", 0.34)
+	mat.set_shader_parameter("iris_margin", 0.03)
+	mat.set_shader_parameter("pupil_radius", 0.13)
+	mat.set_shader_parameter("eye_white", Color(0.92, 0.90, 0.88))
+	mat.set_shader_parameter("pupil_color", Color(0.02, 0.02, 0.025))
+	mat.set_shader_parameter("texture_iris_color", _iris_ramp())
+	mat.set_shader_parameter("eye_cell_scale", 17.0)
+	mat.set_shader_parameter("eye_cell_jitter", 0.6)
+	mat.set_shader_parameter("iris_pinch", 0.6)
+	mat.set_shader_parameter("rand_seed", 12345)
+	mat.set_shader_parameter("uv1_scale", Vector3(1, 1, 1))
+	mat.set_shader_parameter("uv1_offset", Vector3(0, 0, 0))
+	return mat
 
 
-func _make_pupil() -> StandardMaterial3D:
-	var m: StandardMaterial3D = StandardMaterial3D.new()
-	m.albedo_color = Color(0.02, 0.02, 0.025)
-	m.roughness = 0.12
-	m.metallic = 0.0
-	m.metallic_specular = 0.7
-	m.cull_mode = BaseMaterial3D.CULL_DISABLED
-	return m
+func _make_cornea() -> ShaderMaterial:
+	# Glassy additive specular shell over the eyeball (blackears cornea, MIT).
+	var mat: ShaderMaterial = ShaderMaterial.new()
+	mat.shader = load("res://addons/eyeball_shader/shaders/cornea.gdshader") as Shader
+	mat.set_shader_parameter("shininess", 360.0)
+	mat.set_shader_parameter("spec_intensity", 0.32)
+	mat.set_shader_parameter("alpha_max", 0.8)
+	return mat
 
 
 func _make_mouth() -> StandardMaterial3D:
@@ -687,7 +692,7 @@ func _build_ui() -> void:
 
 	# ── CATCHLIGHT ──
 	_hdr(vb, "Catchlight (frontal omni)")
-	_mkslider(vb, "CATCH", "energy", 0.0, 4.0, 0.01, 0.22, func(v): catch_light.light_energy = v)
+	_mkslider(vb, "CATCH", "energy", 0.0, 4.0, 0.01, 0.12, func(v): catch_light.light_energy = v)
 
 	# ── ENVIRONMENT ──
 	_hdr(vb, "Environment")
