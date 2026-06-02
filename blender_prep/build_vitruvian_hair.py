@@ -10,6 +10,8 @@ import numpy as np
 from mathutils import Vector
 
 STYLE = sys.argv[-1] if "--" in sys.argv else "Eve"
+# Clip strands draping over the face (framing-locks trick) — for long styles only.
+CLIP_FACE = STYLE in ("Eve", "Back1", "SceneHair_1_O4saken", "Bob")
 VDIR = r"C:\Users\Sam\AppData\Roaming\Blender Foundation\Blender\4.5\scripts\addons\CharMorph\data\characters\Vitruvian"
 OUT = r"H:/Work01/VitruvianGodot/godot_project"
 HAIRDIR = os.path.join(VDIR, "hairstyles")
@@ -33,7 +35,28 @@ def load_strands(npz, point_step):
     return out
 
 
-def build_cards(strands, stride, w_root, w_tip, roll_max, name):
+def clip_over_face(strands):
+    # FRAMING-LOCKS trick: a long style (Eve) drapes strands DOWN OVER THE FACE,
+    # which read as a flat curtain. Truncate each strand at the first point that
+    # enters the face box (centred, forward, below the hairline) so the face stays
+    # clear — while strands that flow back / down the SIDES never enter the box and
+    # keep their full length as locks that hang against the background (those read
+    # as real strands far better than a scalp-hugging cap). Blender Z-up coords.
+    out = []
+    for st in strands:
+        keep = []
+        for p in st:
+            x, y, zz = float(p[0]), float(p[1]), float(p[2])
+            over_face = (abs(x) < 0.072) and (y < -0.030) and (1.30 < zz < 1.665)
+            if over_face:
+                break          # stop the strand at the hairline / face boundary
+            keep.append(p)
+        if len(keep) >= 2:
+            out.append(np.array(keep))
+    return out
+
+
+def build_cards(strands, stride, w_root, w_tip, roll_max, name, wisp_ext=0.0):
     bm = bmesh.new()
     uvl = bm.loops.layers.uv.new("UVMap")
 
@@ -44,6 +67,16 @@ def build_cards(strands, stride, w_root, w_tip, roll_max, name):
     made = 0
     for si in range(0, len(strands), stride):
         P = [Vector(p) for p in strands[si]]
+        if len(P) >= 2 and wisp_ext > 0.0:
+            # Extend the strand past its tip with a couple of fine flyaway points
+            # (breaks the smooth helmet silhouette into wisps; these map to the
+            # fine, mostly-transparent top of the atlas).
+            tip_dir = (P[-1] - P[-2])
+            seg = tip_dir.length
+            tip_dir = tip_dir.normalized() if seg > 1e-7 else Vector((0, 0, 1))
+            jitter = Vector((h(si * 3.1) - 0.5, h(si * 5.7) - 0.5, h(si * 7.3) - 0.5)) * seg * 0.4
+            P.append(P[-1] + tip_dir * seg * (1.0 + wisp_ext) + jitter)
+            P.append(P[-1] + tip_dir * seg * wisp_ext + jitter * 0.5)
         n = len(P)
         if n < 2:
             continue
@@ -91,8 +124,20 @@ def build_cards(strands, stride, w_root, w_tip, roll_max, name):
 
 bpy.ops.wm.read_factory_settings(use_empty=True)
 
-hair = build_cards(load_strands(STYLE + ".npz", 2), stride=1,
-                   w_root=0.0075, w_tip=0.0024, roll_max=0.6, name="VitHair")
+# Short, dense, COMBED styles (Combover/SlickedBack) hug the scalp and never drape
+# the face → no alpha "waterline" zigzag, and the combed flow reads beautifully with
+# the shader's anisotropic strand-flow specular. (Eve = long hair that curtains the
+# face, which is what produced the helmet + hard hairline.)
+_hair_strands = load_strands(STYLE + ".npz", 2)
+if CLIP_FACE:
+    _n0 = len(_hair_strands)
+    _hair_strands = clip_over_face(_hair_strands)
+    print("[hair] clip_over_face: %d → %d strands" % (_n0, len(_hair_strands)))
+TARGET_CARDS = 1600
+_stride = max(1, len(_hair_strands) // TARGET_CARDS)
+print("[hair] style=%s strands=%d stride=%d (~%d cards)" % (STYLE, len(_hair_strands), _stride, len(_hair_strands) // _stride))
+hair = build_cards(_hair_strands, stride=_stride,
+                   w_root=0.0050, w_tip=0.0010, roll_max=0.6, name="VitHair", wisp_ext=0.25)
 brows = build_cards(load_strands("mind_eyebrows_11_Default.npz", 1), stride=4,
                     w_root=0.0016, w_tip=0.0006, roll_max=0.30, name="VitBrowCards")
 

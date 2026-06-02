@@ -1,58 +1,115 @@
-# Procedural hair-strand coverage atlas (free, no addon). Several vertical strand
-# clumps on black; R channel = per-strand coverage so the repo's hair_card.gdshader
-# (use_red_mask=true) cuts cards into fine strands instead of solid ribbons.
-# V (rows) = along hair length: row 0 = TIP (sparser/finer), bottom = ROOT (denser).
+# Procedural hair-card alpha atlases (free, no addon).
+#
+# Writes TWO atlases (R channel = coverage; the repo hair_card.gdshader reads R):
+#   vit_hair_atlas.png  — NCOLS hair CLUMP cards. Each column is a tapered clump:
+#       wide feathered ROOT (bottom, v=1) narrowing to a wispy converging TIP
+#       (top, v=0), built from individual fingers of differing length so the
+#       silhouette is jagged/feathered (not a solid lozenge) and has internal
+#       gaps. The clump SHAPE survives minification at portrait distance — that
+#       is what makes the cards read as clumped strands instead of a helmet.
+#   vit_lash_atlas.png  — NCOLS single tapered LASH strokes (one bold curved lash
+#       per column, soft point at the tip) for the eyelash cards.
+#
+# V (rows): row 0 = TIP (top), bottom row = ROOT. Cards map root->V1, tip->V0.
 # Run: python generate_hair_atlas.py
 import numpy as np, os, struct, zlib, math, random
 
 W = H = 1024
-NCOLS = 4                      # 4 clump variants across U
-STRANDS_PER_COL = 26
-OUT = r"H:\Work01\VitruvianGodot\godot_project\vit_hair_atlas.png"
+NCOLS = 4
+HAIR_OUT = r"H:\Work01\VitruvianGodot\godot_project\vit_hair_atlas.png"
+LASH_OUT = r"H:\Work01\VitruvianGodot\godot_project\vit_lash_atlas.png"
 
-cov = np.zeros((H, W), np.float32)
-ys = np.arange(H, dtype=np.float32)
-v = ys / (H - 1)               # 0=top(tip) .. 1=bottom(root)
-rng = random.Random(7)
 
-col_w = W // NCOLS
-for c in range(NCOLS):
-    x0 = c * col_w
-    for _ in range(STRANDS_PER_COL):
-        # strand base x within the column, gentle sine wave, taper to tip (top)
-        bx = x0 + rng.uniform(0.12, 0.88) * col_w
-        amp = rng.uniform(2.0, 10.0)
-        ph = rng.uniform(0, 6.28)
-        freq = rng.uniform(1.5, 3.5)
-        # half-width: thin at tip (v=0) → thicker at root (v=1)
-        w_root = rng.uniform(1.2, 2.6)
-        x_center = bx + amp * np.sin(ph + v * freq * math.pi)
-        half_w = (0.25 + 0.75 * v) * w_root
-        # length: some strands stop short of the tip for a soft, uneven top edge
-        top = rng.uniform(0.0, 0.35)
-        x_idx = np.arange(W, dtype=np.float32)[None, :]
-        dist = np.abs(x_idx - x_center[:, None])             # H×W distance to strand
-        s = np.clip(1.0 - dist / half_w[:, None], 0.0, 1.0)   # soft core
-        s = s ** 1.5
-        s[v < top, :] = 0.0
-        # slight along-length brightness variation
-        s *= (0.7 + 0.3 * np.sin(v * 9.0 + ph))[:, None]
+def _write_png(cov, out):
+    cov = np.clip(cov, 0, 1)
+    rgb = np.zeros((H, W, 3), np.uint8)
+    c8 = (cov * 255 + 0.5).astype(np.uint8)
+    rgb[..., 0] = c8                                   # R = coverage (shader reads R)
+    rgb[..., 1] = (c8 * 0.45).astype(np.uint8)         # faint G/B so luma fallback still works
+    rgb[..., 2] = (c8 * 0.28).astype(np.uint8)
+
+    def _chunk(tag, data):
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xffffffff)
+    raw = np.hstack([np.zeros((H, 1), np.uint8), rgb.reshape(H, W * 3)]).tobytes()
+    with open(out, "wb") as f:
+        f.write(b"\x89PNG\r\n\x1a\n" + _chunk(b"IHDR", struct.pack(">IIBBBBB", W, H, 8, 2, 0, 0, 0))
+                + _chunk(b"IDAT", zlib.compress(raw, 6)) + _chunk(b"IEND", b""))
+    print("[atlas] wrote %s  mean %.3f max %.3f" % (out, cov.mean(), cov.max()))
+
+
+# ── HAIR CLUMP atlas ──────────────────────────────────────────────────────────
+def build_hair():
+    cov = np.zeros((H, W), np.float32)
+    ys = np.arange(H, dtype=np.float32)
+    v = ys / (H - 1)                       # 0=top(tip) .. 1=bottom(root)
+    x_idx = np.arange(W, dtype=np.float32)[None, :]
+    rng = random.Random(11)
+    col_w = W / NCOLS
+
+    for c in range(NCOLS):
+        cx = (c + 0.5) * col_w
+        # A COMBED CLUMP per card: enough overlapping strands to read as a continuous
+        # lock of hair (cards must survive the shader's alpha test — too sparse and
+        # they vanish, leaving only the dark scalp = "helmet"), with internal
+        # striations + feathered edges so the anisotropic specular reads as strands.
+        N_FING = 16
+        root_spread = 0.72 * col_w
+        for i in range(N_FING):
+            f = i / (N_FING - 1)           # 0..1 across the clump
+            lateral = (f - 0.5)
+            root_x = cx + lateral * root_spread + rng.uniform(-3, 3)
+            # outer strands shorter → clump tapers to a feathered point at the tip.
+            top_v = abs(lateral) * 1.35 + rng.uniform(0.0, 0.16)
+            top_v = min(top_v, 0.92)
+            conv = 0.7
+            amp = rng.uniform(2.0, 6.0)
+            ph = rng.uniform(0, 6.28)
+            freq = rng.uniform(1.0, 2.4)
+            # medium strands that overlap into a readable lock: ~4px root → ~1.2px tip
+            hw_root = rng.uniform(3.0, 4.6)
+            hw_tip = rng.uniform(1.0, 1.6)
+
+            denom = max(1e-3, 1.0 - top_v)
+            u = np.clip((1.0 - v) / denom, 0.0, 1.0)
+            x_center = (root_x * (1 - conv * u) + cx * (conv * u)
+                        + amp * np.sin(ph + u * freq * math.pi))
+            hw = hw_root * (1 - u) + hw_tip * u
+            dist = np.abs(x_idx - x_center[:, None])
+            s = np.clip(1.0 - dist / hw[:, None], 0.0, 1.0) ** 1.2
+            tip_fade = np.clip(1.0 - 0.6 * u, 0.28, 1.0)
+            s *= tip_fade[:, None]
+            s[v < top_v, :] = 0.0
+            s *= (0.82 + 0.18 * np.sin(u * 8.0 + ph))[:, None]
+            cov = np.maximum(cov, s)
+    # Mild root fade so the very base feathers slightly (not a hard band).
+    root_fade = np.clip((1.0 - v) / 0.10 + 0.5, 0.0, 1.0)
+    cov *= root_fade[:, None]
+    _write_png(cov, HAIR_OUT)
+
+
+# ── LASH atlas ────────────────────────────────────────────────────────────────
+def build_lash():
+    cov = np.zeros((H, W), np.float32)
+    ys = np.arange(H, dtype=np.float32)
+    v = ys / (H - 1)
+    x_idx = np.arange(W, dtype=np.float32)[None, :]
+    rng = random.Random(23)
+    col_w = W / NCOLS
+    u = 1.0 - v                            # 0 at root(bottom) .. 1 at tip(top)
+    for c in range(NCOLS):
+        cx = (c + 0.5) * col_w
+        curve = rng.uniform(-0.16, 0.16) * col_w
+        # one bold lash FILLING most of the column so the card reads as a solid
+        # tapered lash: half-width ~38% of the column at root → fine point at tip.
+        hw = (0.38 * col_w) * (1 - u) ** 1.3 + 4.0 * u
+        x_center = cx + curve * (u ** 2) * 3.0
+        dist = np.abs(x_idx - x_center[:, None])
+        s = np.clip(1.0 - dist / hw[:, None], 0.0, 1.0) ** 0.8
+        s *= np.clip(1.0 - 0.35 * u, 0.3, 1.0)[:, None]    # gentle fade toward the tip point
         cov = np.maximum(cov, s)
+    _write_png(cov, LASH_OUT)
 
-cov = np.clip(cov, 0, 1)
-print("[atlas] coverage mean %.3f max %.3f" % (cov.mean(), cov.max()))
 
-# write PNG: R = coverage, G/B small (so luma fallback also works), no alpha needed
-rgb = np.zeros((H, W, 3), np.uint8)
-c8 = (cov * 255 + 0.5).astype(np.uint8)
-rgb[..., 0] = c8
-rgb[..., 1] = (c8 * 0.5).astype(np.uint8)
-rgb[..., 2] = (c8 * 0.3).astype(np.uint8)
-
-def _chunk(tag, data):
-    return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xffffffff)
-raw = np.hstack([np.zeros((H, 1), np.uint8), rgb.reshape(H, W * 3)]).tobytes()
-with open(OUT, "wb") as f:
-    f.write(b"\x89PNG\r\n\x1a\n" + _chunk(b"IHDR", struct.pack(">IIBBBBB", W, H, 8, 2, 0, 0, 0))
-            + _chunk(b"IDAT", zlib.compress(raw, 6)) + _chunk(b"IEND", b""))
-print("[atlas] wrote", OUT)
+build_hair()
+build_lash()
+print("[atlas] done")

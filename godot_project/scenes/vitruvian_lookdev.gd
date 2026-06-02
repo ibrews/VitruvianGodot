@@ -38,7 +38,7 @@ No MetaHuman / Epic assets are used. This demo is fully EULA-free."""
 # ── Held live references (slider callbacks poke these) ──────────────────────
 var skin_mats: Array[ShaderMaterial] = []
 var vit_hair_mat: ShaderMaterial      # hair_card.gdshader (alpha strand atlas)
-var vit_scalp_mat: StandardMaterial3D
+var vit_scalp_mat: ShaderMaterial    # scalp_cap.gdshader (feathered dark dome)
 var vit_brow_mat: ShaderMaterial      # hair_card.gdshader (eyebrow cards)
 
 var key_light: DirectionalLight3D
@@ -159,6 +159,8 @@ func _ready() -> void:
 		_load_settings()
 	if OS.has_environment("LOOKDEV_CAPTURE"):
 		_cap_prefix = OS.get_environment("LOOKDEV_CAPTURE")
+		if _ui_layer:
+			_ui_layer.visible = false   # clean frames for inspection (no panel overlay)
 		print("[vit] CAPTURE MODE → ", _cap_prefix)
 
 
@@ -354,7 +356,7 @@ func _load_and_wire() -> bool:
 				"VitCornea":  mi.set_surface_override_material(s, _make_cornea())
 				"VitMouth":   mi.set_surface_override_material(s, _make_mouth())
 				"VitScalp":   mi.set_surface_override_material(s, _make_scalp())
-				"VitLash":    mi.set_surface_override_material(s, _make_hair_card(Color(0.04, 0.03, 0.022), 0.10, 0.3, 0.6))
+				"VitLash":    mi.set_surface_override_material(s, _make_lash())
 				_:            pass
 
 	if ResourceLoader.exists(HAIR_GLB):
@@ -468,39 +470,64 @@ func _make_mouth() -> StandardMaterial3D:
 	return m
 
 
-func _make_scalp() -> StandardMaterial3D:
-	vit_scalp_mat = StandardMaterial3D.new()
-	vit_scalp_mat.albedo_color = Color(0.045, 0.032, 0.022)
-	vit_scalp_mat.roughness = 0.7
-	vit_scalp_mat.metallic = 0.0
+func _make_scalp() -> ShaderMaterial:
+	# Dark hair-coloured UNDERLAYER beneath the cards, with a hairline-feathered
+	# alpha (scalp_cap.gdshader) so it has no hard rim.
+	vit_scalp_mat = ShaderMaterial.new()
+	vit_scalp_mat.shader = load("res://scenes/scalp_cap.gdshader") as Shader
+	vit_scalp_mat.set_shader_parameter("hair_color", Color(0.030, 0.020, 0.014))
+	vit_scalp_mat.set_shader_parameter("roughness_val", 0.82)
+	vit_scalp_mat.set_shader_parameter("specular_val", 0.18)
+	vit_scalp_mat.set_shader_parameter("anisotropy", 0.6)
+	# Narrow feather band right at the hairline: solid dark above ~1.66, soft below.
+	vit_scalp_mat.set_shader_parameter("fade_lo", 1.628)
+	vit_scalp_mat.set_shader_parameter("fade_hi", 1.662)
 	return vit_scalp_mat
 
 
-func _make_hair_card(color: Color, threshold: float, root_dark: float, rough: float) -> ShaderMaterial:
+func _make_hair_card(color: Color, threshold: float, root_dark: float, rough: float,
+		atlas: String = "res://vit_hair_atlas.png", spec: float = 0.14) -> ShaderMaterial:
 	# Alpha-clipped hair-card shader reading the procedural strand atlas (R channel).
 	var mat: ShaderMaterial = ShaderMaterial.new()
 	mat.shader = load("res://scenes/hair_card.gdshader") as Shader
 	mat.set_shader_parameter("hair_color", color)
-	mat.set_shader_parameter("coverage_atlas", _tex("res://vit_hair_atlas.png"))
+	mat.set_shader_parameter("coverage_atlas", _tex(atlas))
 	mat.set_shader_parameter("use_red_mask", true)
 	mat.set_shader_parameter("invert_mask", false)
 	mat.set_shader_parameter("alpha_threshold", threshold)
 	mat.set_shader_parameter("root_darkening", root_dark)
 	mat.set_shader_parameter("roughness_val", rough)
-	mat.set_shader_parameter("specular_val", 0.35)
+	mat.set_shader_parameter("specular_val", spec)
 	return mat
 
 
 func _make_hair() -> ShaderMaterial:
 	if vit_hair_mat == null:
-		vit_hair_mat = _make_hair_card(Color(0.09, 0.064, 0.045), 0.10, 0.55, 0.6)
+		# Cards LIGHTER than the dark scalp cap behind them → the combed locks read
+		# against the shadow; strong anisotropic sheen sells it as combed hair.
+		vit_hair_mat = _make_hair_card(Color(0.060, 0.042, 0.030), 0.12, 0.5, 0.7,
+			"res://vit_hair_atlas.png", 0.24)
+		vit_hair_mat.set_shader_parameter("anisotropy", 0.8)
+		vit_hair_mat.set_shader_parameter("tonal_variation", 0.5)
+		vit_hair_mat.set_shader_parameter("tip_lighten", 0.3)
+		vit_hair_mat.set_shader_parameter("edge_break", 0.4)
 	return vit_hair_mat
 
 
 func _make_browcards() -> ShaderMaterial:
 	if vit_brow_mat == null:
-		vit_brow_mat = _make_hair_card(Color(0.12, 0.085, 0.055), 0.12, 0.45, 0.7)
+		vit_brow_mat = _make_hair_card(Color(0.11, 0.078, 0.05), 0.28, 0.45, 0.72)
+		vit_brow_mat.set_shader_parameter("anisotropy", 0.5)
+		vit_brow_mat.set_shader_parameter("tonal_variation", 0.3)
 	return vit_brow_mat
+
+
+func _make_lash() -> ShaderMaterial:
+	# Single-lash atlas (one solid tapered lash per column) → distinct curved lashes.
+	var m: ShaderMaterial = _make_hair_card(Color(0.022, 0.016, 0.013), 0.34, 0.2, 0.5,
+		"res://vit_lash_atlas.png")
+	m.set_shader_parameter("anisotropy", 0.4)
+	return m
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -712,9 +739,9 @@ func _build_ui() -> void:
 	# ── HAIR ──
 	_hdr(vb, "Hair")
 	_mkcolor(vb, "hair_color", "hair color", Color("19120c"), func(c): if vit_hair_mat: vit_hair_mat.set_shader_parameter("hair_color", c))
-	_mkcolor(vb, "scalp_color", "scalp color", Color("0b0806"), func(c): if vit_scalp_mat: vit_scalp_mat.albedo_color = c)
+	_mkcolor(vb, "scalp_color", "scalp color", Color("0b0806"), func(c): if vit_scalp_mat: vit_scalp_mat.set_shader_parameter("hair_color", c))
 	_mkcolor(vb, "brow_color", "eyebrow color", Color("1f160e"), func(c): if vit_brow_mat: vit_brow_mat.set_shader_parameter("hair_color", c))
-	_mkslider(vb, "hair_threshold", "hair density", 0.02, 0.6, 0.005, 0.10, func(v): if vit_hair_mat: vit_hair_mat.set_shader_parameter("alpha_threshold", v))
+	_mkslider(vb, "hair_threshold", "hair density", 0.02, 0.7, 0.005, 0.34, func(v): if vit_hair_mat: vit_hair_mat.set_shader_parameter("alpha_threshold", v))
 
 	# ── CAMERA / DOF ──
 	_hdr(vb, "Camera / DOF")

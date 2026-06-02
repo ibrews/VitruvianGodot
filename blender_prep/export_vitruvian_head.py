@@ -62,8 +62,12 @@ bm.verts.ensure_lookup_table()
 bmesh.ops.delete(bm, geom=[v for v in bm.verts if v.co.z < NECK_CUT_Z], context='VERTS')
 # Scalp cap (dark) under the hair part.
 bm.faces.ensure_lookup_table(); bm.normal_update()
+# Dark scalp dome under the hair (backing so sparse spots read as hair-in-shadow,
+# not bald skin). Covers the crown generously; its front edge is FEATHERED in the
+# shader (scalp_cap.gdshader fades alpha near the hairline) so it never shows a
+# hard rim — that hard rim was the "zigzag hairline".
 scalp_src = [f for f in bm.faces if f.material_index == SKIN
-             and f.calc_center_median().z >= 1.645 and f.calc_center_median().y > -0.065]
+             and f.calc_center_median().z >= 1.625 and f.calc_center_median().y > -0.075]
 dup = bmesh.ops.duplicate(bm, geom=scalp_src)
 for el in dup["geom"]:
     if isinstance(el, bmesh.types.BMFace):
@@ -120,41 +124,68 @@ for so in src.values():
     bpy.data.objects.remove(so, do_unlink=True)
 print("[export] placed", len(eye_objs), "eye objects")
 
-# ---- procedural eyelash cards (no lash npz exists; build an upper-lid arc) ----
+# ---- procedural eyelash cards (no lash npz exists; build lid arcs) ----
+# A FEW distinct, clearly separated, thin curved single-lash cards per eye, each
+# mapping one column of the dedicated lash atlas (vit_lash_atlas.png → one solid
+# tapered lash per column). Upper lid = longer, fanning up/out; lower lid = a few
+# short, subtle lashes. NOT a block of overlapping fat cards.
 NCOLS = 4
-LASH_LEN = 0.0065
 lash_mat = bpy.data.materials.new("VitLash")
+
+
+def _emit_lash(bm, uvl, root, lash_dir, side_vec, length, w_root, w_tip, curl, col):
+    u0 = col / NCOLS + 0.012
+    u1 = (col + 1) / NCOLS - 0.012
+    seg = 4
+    prev = None
+    for j in range(seg + 1):
+        f = j / seg
+        w = w_root * (1 - f) + w_tip * f
+        p = root + lash_dir * (length * f) + Vector((0, 0, 1)) * (curl * f * f)
+        A = bm.verts.new(p + side_vec * w)
+        B = bm.verts.new(p - side_vec * w)
+        vrow = 1.0 - f
+        if prev is not None:
+            face = bm.faces.new((prev[0], prev[1], B, A))
+            pv = 1.0 - (j - 1) / seg
+            for loop in face.loops:
+                vert = loop.vert
+                uu = u0 if (vert == prev[0] or vert == A) else u1
+                vv = pv if (vert == prev[0] or vert == prev[1]) else vrow
+                loop[uvl].uv = (uu, vv)
+        prev = (A, B)
+
+
 def build_lashes(center, R, name):
     bm = bmesh.new()
     uvl = bm.loops.layers.uv.new("UVMap")
     up = Vector((0, 0, 1)); right = Vector((1, 0, 0)); fwd = Vector((0, -1, 0))
-    N = 11
-    for k in range(N):
-        a = math.radians(-66 + 132 * k / (N - 1))   # around the upper rim, 0=top
+    # Upper lashes: 7, well separated along the upper rim, fan up + outward.
+    # Roots pushed well FORWARD (fwd*R*1.15) so they sit clearly IN FRONT of the
+    # eyeball front surface (≈ centre−R) and on the lid, not buried in the cornea.
+    NU = 7
+    for k in range(NU):
+        a = math.radians(-58 + 116 * k / (NU - 1))      # ~19° apart → clear gaps
         rim_dir = (math.cos(a) * up + math.sin(a) * right).normalized()
-        root = center + rim_dir * (R * 0.92) + fwd * (R * 0.35)
-        lash_dir = (rim_dir * 0.35 + fwd * 1.0 + up * 0.5).normalized()
+        root = center + rim_dir * (R * 0.85) + fwd * (R * 1.15)
+        lash_dir = (rim_dir * 0.45 + fwd * 0.7 + up * 0.85).normalized()
         side = lash_dir.cross(fwd)
         if side.length < 1e-6: side = lash_dir.cross(right)
         side = side.normalized()
-        col = k % NCOLS
-        u0 = col / NCOLS + 0.01; u1 = (col + 1) / NCOLS - 0.01
-        seg = 3; prev = None
-        for j in range(seg + 1):
-            f = j / seg
-            w = 0.0017 * (1 - f) + 0.0004 * f
-            p = root + lash_dir * (LASH_LEN * f) + up * (0.0016 * f * f)  # slight upward curl
-            A = bm.verts.new(p + side * w); B = bm.verts.new(p - side * w)
-            vrow = 1.0 - f
-            if prev is not None:
-                face = bm.faces.new((prev[0], prev[1], B, A))
-                pv = 1.0 - (j - 1) / seg
-                for loop in face.loops:
-                    vert = loop.vert
-                    uu = u0 if (vert == prev[0] or vert == A) else u1
-                    vv = pv if (vert == prev[0] or vert == prev[1]) else vrow
-                    loop[uvl].uv = (uu, vv)
-            prev = (A, B)
+        _emit_lash(bm, uvl, root, lash_dir, side, length=0.0085,
+                   w_root=0.0013, w_tip=0.00015, curl=0.0028, col=k % NCOLS)
+    # Lower lashes: 3 short, subtle, fan down + outward.
+    NL = 3
+    for k in range(NL):
+        a = math.radians(150 + 60 * k / (NL - 1))        # lower rim
+        rim_dir = (math.cos(a) * up + math.sin(a) * right).normalized()
+        root = center + rim_dir * (R * 0.85) + fwd * (R * 1.15)
+        lash_dir = (rim_dir * 0.5 + fwd * 0.7 - up * 0.4).normalized()
+        side = lash_dir.cross(fwd)
+        if side.length < 1e-6: side = lash_dir.cross(right)
+        side = side.normalized()
+        _emit_lash(bm, uvl, root, lash_dir, side, length=0.0042,
+                   w_root=0.0008, w_tip=0.00012, curl=-0.0008, col=k % NCOLS)
     me = bpy.data.meshes.new(name); bm.normal_update(); bm.to_mesh(me); bm.free()
     me.materials.append(lash_mat)
     o = bpy.data.objects.new(name, me); bpy.context.scene.collection.objects.link(o)
