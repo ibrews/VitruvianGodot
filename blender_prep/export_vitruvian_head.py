@@ -120,6 +120,49 @@ for so in src.values():
     bpy.data.objects.remove(so, do_unlink=True)
 print("[export] placed", len(eye_objs), "eye objects")
 
+# ---- procedural eyelash cards (no lash npz exists; build an upper-lid arc) ----
+NCOLS = 4
+LASH_LEN = 0.0065
+lash_mat = bpy.data.materials.new("VitLash")
+def build_lashes(center, R, name):
+    bm = bmesh.new()
+    uvl = bm.loops.layers.uv.new("UVMap")
+    up = Vector((0, 0, 1)); right = Vector((1, 0, 0)); fwd = Vector((0, -1, 0))
+    N = 11
+    for k in range(N):
+        a = math.radians(-66 + 132 * k / (N - 1))   # around the upper rim, 0=top
+        rim_dir = (math.cos(a) * up + math.sin(a) * right).normalized()
+        root = center + rim_dir * (R * 0.92) + fwd * (R * 0.35)
+        lash_dir = (rim_dir * 0.35 + fwd * 1.0 + up * 0.5).normalized()
+        side = lash_dir.cross(fwd)
+        if side.length < 1e-6: side = lash_dir.cross(right)
+        side = side.normalized()
+        col = k % NCOLS
+        u0 = col / NCOLS + 0.01; u1 = (col + 1) / NCOLS - 0.01
+        seg = 3; prev = None
+        for j in range(seg + 1):
+            f = j / seg
+            w = 0.0017 * (1 - f) + 0.0004 * f
+            p = root + lash_dir * (LASH_LEN * f) + up * (0.0016 * f * f)  # slight upward curl
+            A = bm.verts.new(p + side * w); B = bm.verts.new(p - side * w)
+            vrow = 1.0 - f
+            if prev is not None:
+                face = bm.faces.new((prev[0], prev[1], B, A))
+                pv = 1.0 - (j - 1) / seg
+                for loop in face.loops:
+                    vert = loop.vert
+                    uu = u0 if (vert == prev[0] or vert == A) else u1
+                    vv = pv if (vert == prev[0] or vert == prev[1]) else vrow
+                    loop[uvl].uv = (uu, vv)
+            prev = (A, B)
+    me = bpy.data.meshes.new(name); bm.normal_update(); bm.to_mesh(me); bm.free()
+    me.materials.append(lash_mat)
+    o = bpy.data.objects.new(name, me); bpy.context.scene.collection.objects.link(o)
+    return o
+for side_name, center in SOCKETS.items():
+    eye_objs.append(build_lashes(center + Vector((0.0, EYE_RECESS, 0.0)), EYE_R, "Lash_%s" % side_name))
+print("[export] added eyelashes")
+
 # NOTE: eyebrows are now built as alpha CARDS in build_vitruvian_hair.py (from the
 # eyebrow guide-strand npz), not the flat Vitruvian-EyeBrows mesh — so we no longer
 # append it here.

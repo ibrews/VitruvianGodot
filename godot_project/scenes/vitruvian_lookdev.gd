@@ -354,6 +354,7 @@ func _load_and_wire() -> bool:
 				"VitCornea":  mi.set_surface_override_material(s, _make_cornea())
 				"VitMouth":   mi.set_surface_override_material(s, _make_mouth())
 				"VitScalp":   mi.set_surface_override_material(s, _make_scalp())
+				"VitLash":    mi.set_surface_override_material(s, _make_hair_card(Color(0.04, 0.03, 0.022), 0.10, 0.3, 0.6))
 				_:            pass
 
 	if ResourceLoader.exists(HAIR_GLB):
