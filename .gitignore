@@ -1,0 +1,15 @@
+# Godot editor cache / imports (regenerated on open)
+godot_project/.godot/
+*.import
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.tmp
+*.bak
+
+# NOTE: unlike the MetaHumanGodot repo, the character assets here are CC0 and ARE
+# committed (vitruvian_head.glb, vit_*.png). Do NOT add *.glb / *.png ignores.
+
+# look-dev capture output
+out/

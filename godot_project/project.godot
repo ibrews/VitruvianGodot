@@ -1,0 +1,40 @@
+; Engine configuration file.
+; VitruvianGodot — CC0 photoreal-head look-dev in stock Godot 4.6 Forward+.
+
+config_version=5
+
+[animation]
+
+compatibility/default_parent_skeleton_in_mesh_instance_3d=true
+
+[application]
+
+config/name="VitruvianGodot"
+config/description="CC0 'Vitruvian' (CharMorph) head rendered in stock Godot 4.6
+Forward+ through the MatMADNESS skin shader stack. EULA-free alternative to the
+MetaHuman->Godot pipeline."
+run/main_scene="res://scenes/vitruvian_lookdev.tscn"
+config/features=PackedStringArray("4.6", "Forward Plus")
+
+[display]
+
+window/size/viewport_width=1280
+window/size/viewport_height=1280
+window/size/mode=0
+window/size/resizable=true
+
+[rendering]
+
+renderer/rendering_method="forward_plus"
+renderer/rendering_method.mobile="forward_plus"
+environment/subsurface_scattering/subsurface_scattering_quality=2
+environment/subsurface_scattering/subsurface_scattering_scale=0.08
+anti_aliasing/quality/msaa_3d=3
+anti_aliasing/quality/screen_space_aa=0
+anti_aliasing/quality/use_taa=false
+scaling_3d/mode=0
+scaling_3d/scale=2.0
+environment/defaults/default_clear_color=Color(0.015, 0.017, 0.022, 1)
+lights_and_shadows/directional_shadow/size=4096
+lights_and_shadows/directional_shadow/soft_shadow_filter_quality=4
+lights_and_shadows/positional_shadow/soft_shadow_filter_quality=4
