@@ -72,9 +72,14 @@ ribbons densified with jittered children + a dark scalp cap — see
 `blender_prep/build_vitruvian_hair.py`. It's a spike-grade groom, not a full
 card-with-alpha-atlas system, so it reads best at portrait framing.
 
+The look-dev scene is the **full interactive tool**: a live slider panel (skin
+SSS/normal/roughness/specular, the three lights + catchlight, environment
+exposure/saturation/contrast/backdrop, hair/scalp/brow colour, camera FOV/DOF),
+orbit + auto-turntable + hero camera, per-setting reset, save/load presets, and
+screenshot / turntable-movie capture — the same controls as the MetaHuman
+look-dev tool, here with zero MetaHuman assets.
+
 Not yet done:
-- **Full slider look-dev UI** (port `look_dev.gd`'s panel — currently a fixed
-  capture/orbit scene).
 - **Hair polish** — proper hair cards with an alpha atlas + a dedicated hair
   shader; denser crown; eyelashes.
 - **Body** (UDIM tiles 1002–1004 → per-tile texture split + wiring).
