@@ -38,8 +38,9 @@ centers = [p.center.copy() for p in me.polygons]
 
 # New slots: 0 skin, 1 sclera, 2 mouth, 3 iris, 4 pupil, 5 = DELETE marker.
 me.materials.clear()
-for nm in ("VitSkin", "VitSclera", "VitMouth", "VitIris", "VitPupil", "VitDelete"):
+for nm in ("VitSkin", "VitSclera", "VitMouth", "VitIris", "VitPupil", "VitDelete", "VitScalp"):
     me.materials.append(bpy.data.materials.new(nm))
+SCALP = 6
 uvl = me.uv_layers[udim].data
 DEL = 5
 for i, poly in enumerate(me.polygons):
@@ -74,8 +75,23 @@ loose = [v for v in bm.verts if not v.link_faces]
 bmesh.ops.delete(bm, geom=loose, context='VERTS')
 bm.verts.ensure_lookup_table()
 bmesh.ops.delete(bm, geom=[v for v in bm.verts if v.co.z < NECK_CUT_Z], context='VERTS')
+# Scalp cap: duplicate the upper-scalp skin faces, inflate along normals, and
+# tag them VitScalp (dark) so the bald scalp doesn't show through the hair part.
+bm.faces.ensure_lookup_table()
+bm.normal_update()
+# Crown/back/top scalp (camera-front is -Y; forehead is low Y → exclude it so we
+# don't darken the brow). Covers the hair-bearing dome.
+scalp_src = [f for f in bm.faces if f.material_index == 0
+             and f.calc_center_median().z >= 1.655
+             and f.calc_center_median().y > -0.05]
+dup = bmesh.ops.duplicate(bm, geom=scalp_src)
+for el in dup["geom"]:
+    if isinstance(el, bmesh.types.BMFace):
+        el.material_index = SCALP
+        for v in el.verts:
+            v.co += v.normal * 0.003
 bm.to_mesh(me); bm.free(); me.update()
-print("[export] head verts:", len(me.vertices), "polys:", len(me.polygons))
+print("[export] head verts:", len(me.vertices), "polys:", len(me.polygons), "scalp faces:", len(scalp_src))
 
 # Nudge iris (slot 3) + pupil (slot 4) forward into the opened aperture so they
 # sit proud of the sclera rim and read from the front.

@@ -19,6 +19,7 @@ extends Node3D
 # ─────────────────────────────────────────────────────────────────────────────
 
 const HEAD_GLB: String = "res://vitruvian_head.glb"
+const HAIR_GLB: String = "res://vitruvian_hair.glb"
 
 var skin_mat: ShaderMaterial
 var key_light: DirectionalLight3D
@@ -28,11 +29,12 @@ var camera: Camera3D
 var env: Environment
 
 # Frame the head: AABB Y 1.49–1.746, center ~1.62.
-var orbit_target: Vector3 = Vector3(0.0, 1.63, 0.0)
-var orbit_yaw: float = -18.0
-var orbit_pitch: float = 4.0
-var orbit_dist: float = 0.46
+var orbit_target: Vector3 = Vector3(0.0, 1.61, 0.0)
+var orbit_yaw: float = -16.0
+var orbit_pitch: float = 5.0
+var orbit_dist: float = 0.52
 var _drag_mode: int = 0
+var catch_light: OmniLight3D
 
 var key_yaw: float = -81.0
 var key_pitch: float = -30.0
@@ -166,20 +168,34 @@ func _setup_lights() -> void:
 	key_light.rotation = Vector3(deg_to_rad(key_pitch), deg_to_rad(key_yaw), 0.0)
 	add_child(key_light)
 
+	# Cool rim as an edge accent only — kept modest so it doesn't drown the warm
+	# skin tone in blue (the earlier renders were over-blue).
 	rim_light = DirectionalLight3D.new()
 	rim_light.name = "RimLight"
-	rim_light.light_energy = 3.0
-	rim_light.light_specular = 0.25
-	rim_light.light_color = Color(0.34, 0.58, 1.0)
+	rim_light.light_energy = 1.9
+	rim_light.light_specular = 0.4
+	rim_light.light_color = Color(0.40, 0.62, 1.0)
 	rim_light.rotation = Vector3(deg_to_rad(rim_pitch), deg_to_rad(rim_yaw), 0.0)
 	add_child(rim_light)
 
+	# Near-neutral, slightly warm fill so shadow-side skin stays fleshy not blue.
 	fill_light = DirectionalLight3D.new()
 	fill_light.name = "FillLight"
-	fill_light.light_energy = 0.7
-	fill_light.light_color = Color(0.5, 0.62, 1.0)
+	fill_light.light_energy = 0.9
+	fill_light.light_color = Color(0.85, 0.84, 0.82)
 	fill_light.rotation = Vector3(deg_to_rad(fill_pitch), deg_to_rad(fill_yaw), 0.0)
 	add_child(fill_light)
+
+	# Frontal catchlight for a corneal spark + a little eye/skin sheen.
+	catch_light = OmniLight3D.new()
+	catch_light.name = "CatchLight"
+	catch_light.light_energy = 0.22
+	catch_light.light_specular = 1.0
+	catch_light.light_color = Color(1.0, 0.98, 0.95)
+	catch_light.omni_range = 1.2
+	catch_light.omni_attenuation = 2.4
+	catch_light.position = Vector3(0.22, 1.78, 0.45)  # high & off-axis → small spark, not a wash
+	add_child(catch_light)
 
 
 func _setup_camera() -> void:
@@ -219,9 +235,45 @@ func _load_and_wire() -> bool:
 				"VitIris":   mi.set_surface_override_material(s, _make_iris())
 				"VitMouth":  mi.set_surface_override_material(s, _make_mouth())
 				"VitPupil":  mi.set_surface_override_material(s, _make_pupil())
+				"VitScalp":  mi.set_surface_override_material(s, _make_scalp())
 				"VitBrows":  mi.set_surface_override_material(s, _make_brows())
 				_:           pass
+
+	# Scalp hair (separate GLB, co-located).
+	if ResourceLoader.exists(HAIR_GLB):
+		var hscene: PackedScene = load(HAIR_GLB)
+		if hscene:
+			var hinst: Node = hscene.instantiate()
+			hinst.name = "Hair"
+			add_child(hinst)
+			var hmeshes: Array[MeshInstance3D] = []
+			_collect_meshes(hinst, hmeshes)
+			for hm in hmeshes:
+				for s in range(hm.mesh.get_surface_count()):
+					hm.set_surface_override_material(s, _make_hair())
 	return true
+
+
+func _make_scalp() -> StandardMaterial3D:
+	# Dark hair-root cap under the strands so the scalp/part doesn't read as bald.
+	var m: StandardMaterial3D = StandardMaterial3D.new()
+	m.albedo_color = Color(0.045, 0.032, 0.022)
+	m.roughness = 0.7
+	m.metallic = 0.0
+	return m
+
+
+func _make_hair() -> StandardMaterial3D:
+	var m: StandardMaterial3D = StandardMaterial3D.new()
+	m.albedo_color = Color(0.055, 0.040, 0.028)   # dark brown
+	m.roughness = 0.55
+	m.metallic = 0.0
+	m.metallic_specular = 0.35
+	m.anisotropy_enabled = true
+	m.anisotropy = 0.8
+	m.cull_mode = BaseMaterial3D.CULL_DISABLED
+	m.specular_mode = BaseMaterial3D.SPECULAR_SCHLICK_GGX
+	return m
 
 
 func _collect_meshes(node: Node, out: Array[MeshInstance3D]) -> void:
@@ -255,9 +307,9 @@ func _make_iris() -> StandardMaterial3D:
 	var m: StandardMaterial3D = StandardMaterial3D.new()
 	m.albedo_texture = _tex("res://vit_iris.png")
 	m.albedo_color = Color(1, 1, 1)
-	m.roughness = 0.35
+	m.roughness = 0.45
 	m.metallic = 0.0
-	m.metallic_specular = 0.5
+	m.metallic_specular = 0.35
 	m.clearcoat_enabled = true
 	m.clearcoat = 0.4
 	m.clearcoat_roughness = 0.08
@@ -309,8 +361,8 @@ func _make_skin() -> ShaderMaterial:
 	mat.set_shader_parameter("metallic_texture_channel", Plane(1, 0, 0, 0))
 	mat.set_shader_parameter("use_subsurface_scattering", true)
 	mat.set_shader_parameter("use_noise", false)
-	mat.set_shader_parameter("subsurface_scattering_strength", 0.34)
-	mat.set_shader_parameter("skin_smoothness", 1.4)
+	mat.set_shader_parameter("subsurface_scattering_strength", 0.55)
+	mat.set_shader_parameter("skin_smoothness", 1.8)
 	mat.set_shader_parameter("skin_fallof_smoothness", 1.05)
 	mat.set_shader_parameter("sss_depth_scale", 6.0)
 	mat.set_shader_parameter("old_lightwarp_fallof", false)

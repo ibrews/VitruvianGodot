@@ -65,16 +65,20 @@ EXR textures). `export_vitruvian_head.py` (run via
    TS normal map), plus sclera/iris/mouth color.
 
 ## Status & TODO
-This is an early spike-grade port. Working: skin (full SSS), eyes, skin tone,
-eyebrows. Not yet done:
+Working: skin (full SSS), eyes (iris/pupil/sclera from Vitruvian's own eye
+textures), skin tone, eyebrows, and **scalp hair**. The hair is built from the
+CharMorph hairstyle's guide strands (`hairstyles/*.npz`) as cross-section
+ribbons densified with jittered children + a dark scalp cap — see
+`blender_prep/build_vitruvian_hair.py`. It's a spike-grade groom, not a full
+card-with-alpha-atlas system, so it reads best at portrait framing.
+
+Not yet done:
 - **Full slider look-dev UI** (port `look_dev.gd`'s panel — currently a fixed
-  capture scene).
-- **Scalp hair + lashes** (Vitruvian grooms are Blender particle systems → need
-  card conversion).
+  capture/orbit scene).
+- **Hair polish** — proper hair cards with an alpha atlas + a dedicated hair
+  shader; denser crown; eyelashes.
 - **Body** (UDIM tiles 1002–1004 → per-tile texture split + wiring).
 - **Proper normal bake** (currently a displacement-gradient approximation) and a
   scatter/thickness map.
-- **Eye convergence** (irises pushed along world-forward → slightly walleyed at
-  dead-on front; fine at 3/4).
 
 See `NOTICE.md` for licenses/credits.
