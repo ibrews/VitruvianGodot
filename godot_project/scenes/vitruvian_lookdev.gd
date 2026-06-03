@@ -44,6 +44,7 @@ var vit_brow_mat: ShaderMaterial      # hair_card.gdshader (eyebrow cards)
 var key_light: DirectionalLight3D
 var fill_light: DirectionalLight3D
 var rim_light: DirectionalLight3D
+var hair_light: DirectionalLight3D
 var catch_light: OmniLight3D
 var env: Environment
 var backdrop_mat: StandardMaterial3D
@@ -58,6 +59,8 @@ var fill_yaw: float = 21.0
 var fill_pitch: float = 13.0
 var rim_yaw: float = 51.0
 var rim_pitch: float = -45.0
+var hair_light_yaw: float = -12.0
+var hair_light_pitch: float = -80.0
 
 var backdrop_tint: Color = Color("332d28")
 var backdrop_bright: float = 1.0
@@ -297,6 +300,17 @@ func _setup_lights() -> void:
 	_apply_light_rot(rim_light, rim_pitch, rim_yaw)
 	add_child(rim_light)
 
+	# Hair/kicker light from above-behind: rakes the crown so the (otherwise
+	# unlit, side-keyed) top hair catches a sheen and the combed strand flow reads.
+	# High specular + the cards' anisotropy = a strand-flow highlight band on top.
+	hair_light = DirectionalLight3D.new()
+	hair_light.name = "HairLight"
+	hair_light.light_energy = 2.2
+	hair_light.light_specular = 0.1
+	hair_light.light_color = Color(1.0, 0.94, 0.82)
+	_apply_light_rot(hair_light, hair_light_pitch, hair_light_yaw)
+	add_child(hair_light)
+
 	fill_light = DirectionalLight3D.new()
 	fill_light.name = "FillLight"
 	fill_light.light_energy = 0.9
@@ -340,6 +354,8 @@ func _load_and_wire() -> bool:
 	var head: Node = hscene.instantiate()
 	head.name = "Head"
 	_character.add_child(head)
+	if OS.has_environment("HIDE_HEAD"):
+		(head as Node3D).visible = false
 
 	var meshes: Array[MeshInstance3D] = []
 	_collect_meshes(head, meshes)
@@ -471,17 +487,26 @@ func _make_mouth() -> StandardMaterial3D:
 
 
 func _make_scalp() -> ShaderMaterial:
-	# Dark hair-coloured UNDERLAYER beneath the cards, with a hairline-feathered
-	# alpha (scalp_cap.gdshader) so it has no hard rim.
+	# CROWN HAIR: the dome IS what's visible on top (flat crown cards are edge-on),
+	# so scalp_cap.gdshader textures the dome as combed hair (radial strand atlas +
+	# outward normals + centre part) under the long framing locks.
 	vit_scalp_mat = ShaderMaterial.new()
 	vit_scalp_mat.shader = load("res://scenes/scalp_cap.gdshader") as Shader
-	vit_scalp_mat.set_shader_parameter("hair_color", Color(0.030, 0.020, 0.014))
-	vit_scalp_mat.set_shader_parameter("roughness_val", 0.82)
-	vit_scalp_mat.set_shader_parameter("specular_val", 0.18)
-	vit_scalp_mat.set_shader_parameter("anisotropy", 0.6)
-	# Narrow feather band right at the hairline: solid dark above ~1.66, soft below.
-	vit_scalp_mat.set_shader_parameter("fade_lo", 1.628)
-	vit_scalp_mat.set_shader_parameter("fade_hi", 1.662)
+	vit_scalp_mat.set_shader_parameter("hair_color", Color(0.165, 0.118, 0.075))
+	vit_scalp_mat.set_shader_parameter("strand_atlas", _tex("res://vit_hair_atlas.png"))
+	vit_scalp_mat.set_shader_parameter("roughness_val", 0.78)
+	vit_scalp_mat.set_shader_parameter("specular_val", 0.12)
+	vit_scalp_mat.set_shader_parameter("anisotropy", 0.5)
+	vit_scalp_mat.set_shader_parameter("strand_repeats", 52.0)
+	vit_scalp_mat.set_shader_parameter("tex_strength", 1.2)
+	vit_scalp_mat.set_shader_parameter("part_darken", 0.45)
+	vit_scalp_mat.set_shader_parameter("tonal_variation", 0.4)
+	vit_scalp_mat.set_shader_parameter("emit", 0.35)
+	vit_scalp_mat.set_shader_parameter("head_center", Vector3(0.0, 1.55, 0.0))
+	# Cap carries only the CROWN (above the hairline); fade out before the forehead
+	# so it never drapes the face like a visor. Long locks cover below the hairline.
+	vit_scalp_mat.set_shader_parameter("fade_lo", 1.650)
+	vit_scalp_mat.set_shader_parameter("fade_hi", 1.680)
 	return vit_scalp_mat
 
 
@@ -505,12 +530,19 @@ func _make_hair() -> ShaderMaterial:
 	if vit_hair_mat == null:
 		# Cards LIGHTER than the dark scalp cap behind them → the combed locks read
 		# against the shadow; strong anisotropic sheen sells it as combed hair.
-		vit_hair_mat = _make_hair_card(Color(0.060, 0.042, 0.030), 0.12, 0.5, 0.7,
-			"res://vit_hair_atlas.png", 0.24)
-		vit_hair_mat.set_shader_parameter("anisotropy", 0.8)
-		vit_hair_mat.set_shader_parameter("tonal_variation", 0.5)
-		vit_hair_mat.set_shader_parameter("tip_lighten", 0.3)
-		vit_hair_mat.set_shader_parameter("edge_break", 0.4)
+		# Lessons from the Blender render: the CARDS are good — what kills the top in
+		# Godot is (a) too-low threshold smearing strands into a smooth mass and
+		# (b) near-black hair on a near-black cap = zero value range. Fix both:
+		# crisp threshold (like Blender's alpha-clip) + a lighter medium-brown value
+		# (MetaHuman scalp hair is ~0.34,0.27,0.17) so individual strands read.
+		vit_hair_mat = _make_hair_card(Color(0.105, 0.075, 0.050), 0.26, 0.5, 0.86,
+			"res://vit_hair_atlas.png", 0.05)
+		vit_hair_mat.set_shader_parameter("anisotropy", 0.3)
+		vit_hair_mat.set_shader_parameter("tonal_variation", 0.55)
+		vit_hair_mat.set_shader_parameter("tip_lighten", 0.2)
+		vit_hair_mat.set_shader_parameter("edge_break", 0.35)
+		vit_hair_mat.set_shader_parameter("strand_normal", 0.0)
+		vit_hair_mat.set_shader_parameter("head_normal", 0.85)
 	return vit_hair_mat
 
 

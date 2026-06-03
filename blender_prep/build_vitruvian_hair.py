@@ -12,6 +12,7 @@ from mathutils import Vector
 STYLE = sys.argv[-1] if "--" in sys.argv else "Eve"
 # Clip strands draping over the face (framing-locks trick) — for long styles only.
 CLIP_FACE = STYLE in ("Eve", "Back1", "SceneHair_1_O4saken", "Bob")
+NCHILD = 6   # child hairs per guide (bulk); 0 = guides only
 VDIR = r"C:\Users\Sam\AppData\Roaming\Blender Foundation\Blender\4.5\scripts\addons\CharMorph\data\characters\Vitruvian"
 OUT = r"H:/Work01/VitruvianGodot/godot_project"
 HAIRDIR = os.path.join(VDIR, "hairstyles")
@@ -54,6 +55,73 @@ def clip_over_face(strands):
         if len(keep) >= 2:
             out.append(np.array(keep))
     return out
+
+
+def make_children(strands, k, root_spread=0.006, tip_spread=0.012, seed=5):
+    # Real particle hair gets its BULK from child hairs interpolated around each
+    # guide. We fake that: per guide, add k jittered copies offset by a random
+    # root vector (spreads roots to fill gaps between sparse guides) plus a larger
+    # tip vector that grows along the strand (so children fan out toward the ends).
+    rng = np.random.RandomState(seed)
+    out = []
+    for st in strands:
+        out.append(st)
+        n = len(st)
+        tparam = (np.arange(n) / (n - 1))[:, None]
+        for _ in range(k):
+            ro = (rng.rand(3) - 0.5) * 2 * root_spread
+            tip = (rng.rand(3) - 0.5) * 2 * tip_spread
+            out.append(st + ro + tip * tparam)
+    return out
+
+
+def add_crown_volume(strands, amount=0.016, cell=0.014, z_min=1.655):
+    # THE anti-helmet fix for the crown. Crown cards lie flat on the scalp dome →
+    # a smooth painted shell. Push crown-rooted strands OUTWARD along the radial,
+    # by a per-CLUMP amount (coherent within ~`cell`-sized patches) that grows
+    # toward the tip → the top breaks into 3D locks that stand proud, with shadow
+    # gaps to the dark scalp between them. Relief survives at any distance, unlike
+    # the minifying atlas detail. Side/back strands (already voluminous) untouched.
+    hc = np.array([HEAD_C[0], HEAD_C[1], HEAD_C[2]])
+    out = []
+    for st in strands:
+        r = st[0]
+        if r[2] < z_min:
+            out.append(st); continue
+        key = (round(r[0] / cell), round(r[1] / cell), round(r[2] / cell))
+        # deterministic per-clump height 0..1 (two frequencies → varied locks)
+        h = 0.5 * (math.sin(key[0] * 12.9 + key[1] * 78.2 + key[2] * 37.7) * 0.5 + 0.5) \
+            + 0.5 * (math.sin(key[0] * 5.1 - key[1] * 3.7 + key[2] * 9.3) * 0.5 + 0.5)
+        radial = r - hc
+        nrm = np.linalg.norm(radial)
+        radial = radial / nrm if nrm > 1e-6 else np.array([0.0, 0.0, 1.0])
+        push = amount * h
+        n = len(st)
+        st2 = st.astype(float).copy()
+        for i in range(n):
+            f = i / (n - 1)
+            st2[i] = st[i] + radial * push * (0.45 + 0.55 * f)
+        out.append(st2)
+    return out
+
+
+def crown_fill(strands, n_extra=900, seed=9):
+    # Extra short scalp-hugging strands scattered across the CROWN so the top isn't
+    # thin (Eve roots are sparse up there). Each is a clone of a random existing
+    # crown-rooted guide, re-rooted at a jittered nearby scalp point — keeps the
+    # local flow direction but adds root density only where the crown is bald.
+    rng = np.random.RandomState(seed)
+    crown = [st for st in strands if st[0][2] >= 1.66 and abs(st[0][0]) < 0.085 and st[0][1] > -0.045]
+    if not crown:
+        return []
+    extra = []
+    for _ in range(n_extra):
+        st = crown[rng.randint(len(crown))]
+        # short version (first ~60% of the strand) re-rooted with a small offset
+        m = max(2, int(len(st) * 0.6))
+        off = np.array([rng.uniform(-0.012, 0.012), rng.uniform(-0.012, 0.012), rng.uniform(-0.004, 0.004)])
+        extra.append(st[:m] + off)
+    return extra
 
 
 def build_cards(strands, stride, w_root, w_tip, roll_max, name, wisp_ext=0.0):
@@ -124,20 +192,21 @@ def build_cards(strands, stride, w_root, w_tip, roll_max, name, wisp_ext=0.0):
 
 bpy.ops.wm.read_factory_settings(use_empty=True)
 
-# Short, dense, COMBED styles (Combover/SlickedBack) hug the scalp and never drape
-# the face → no alpha "waterline" zigzag, and the combed flow reads beautifully with
-# the shader's anisotropic strand-flow specular. (Eve = long hair that curtains the
-# face, which is what produced the helmet + hard hairline.)
-_hair_strands = load_strands(STYLE + ".npz", 2)
-if CLIP_FACE:
-    _n0 = len(_hair_strands)
-    _hair_strands = clip_over_face(_hair_strands)
-    print("[hair] clip_over_face: %d → %d strands" % (_n0, len(_hair_strands)))
-TARGET_CARDS = 1600
-_stride = max(1, len(_hair_strands) // TARGET_CARDS)
-print("[hair] style=%s strands=%d stride=%d (~%d cards)" % (STYLE, len(_hair_strands), _stride, len(_hair_strands) // _stride))
-hair = build_cards(_hair_strands, stride=_stride,
-                   w_root=0.0050, w_tip=0.0010, roll_max=0.6, name="VitHair", wisp_ext=0.25)
+# TWO-LAYER scalp hair:
+#  1. COVERAGE layer — dense scalp-hugging Combover so the whole CROWN/scalp is
+#     covered with hair CARDS (this is what stops the bald-crown / dark-cap
+#     "helmet": Eve alone is centre-parted and leaves the top bare).
+#  2. FRAMING layer — long Eve locks, face-clipped, for the length that hangs and
+#     frames the face.
+# Both get crown volume + (Eve) children; the head-normal shader lights the whole
+# mass as a rounded volume so the crown reads as hair, not a smooth shell.
+_hair_strands = clip_over_face(load_strands("Eve.npz", 2))
+_hair_strands = _hair_strands + crown_fill(_hair_strands, n_extra=900)
+_hair_strands = make_children(_hair_strands, k=NCHILD, root_spread=0.006, tip_spread=0.013)
+_hair_strands = add_crown_volume(_hair_strands)
+print("[hair] total %d strands (Eve + crown_fill + children + volume)" % len(_hair_strands))
+hair = build_cards(_hair_strands, stride=1,
+                   w_root=0.0042, w_tip=0.0009, roll_max=0.7, name="VitHair", wisp_ext=0.25)
 brows = build_cards(load_strands("mind_eyebrows_11_Default.npz", 1), stride=4,
                     w_root=0.0016, w_tip=0.0006, roll_max=0.30, name="VitBrowCards")
 
