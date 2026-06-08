@@ -17,7 +17,11 @@ extends Node3D
 # ──────────────────────────────────────────────────────────────────────────
 
 const HEAD_GLB: String = "res://vitruvian_head.glb"
-const HAIR_GLB: String = "res://vitruvian_hair.glb"
+# Hair Tool cards (real authored cards + baked strand atlas) replace the old
+# flat-card hair that read as a dark helmet. Old GLB kept for reference/revert.
+const HAIR_GLB: String = "res://hairtool_cards.glb"
+const HAIR_GLB_LEGACY: String = "res://vitruvian_hair.glb"
+const BODY_GLB: String = "res://vitruvian_body.glb"
 const SETTINGS_FILE: String = "look_settings.json"
 
 const CREDITS_TEXT: String = """VitruvianGodot  •  Look-Dev
@@ -37,9 +41,53 @@ No MetaHuman / Epic assets are used. This demo is fully EULA-free."""
 
 # ── Held live references (slider callbacks poke these) ──────────────────────
 var skin_mats: Array[ShaderMaterial] = []
-var vit_hair_mat: ShaderMaterial      # hair_card.gdshader (alpha strand atlas)
-var vit_scalp_mat: ShaderMaterial    # scalp_cap.gdshader (feathered dark dome)
+var vit_hair_mat: ShaderMaterial      # hairtool_card.gdshader (Hair Tool cards)
+var vit_scalp_mat: ShaderMaterial    # scalp_cap.gdshader (dark crown base)
 var vit_brow_mat: ShaderMaterial      # hair_card.gdshader (eyebrow cards)
+var lash_mats: Array[ShaderMaterial] = []     # hair_card.gdshader (eyelashes, L+R)
+var eyeball_mats: Array[ShaderMaterial] = []  # eyeball_shader (L+R)
+var cornea_mats: Array[ShaderMaterial] = []   # cornea (L+R)
+# iris fibre ramp shared across both eyes (3 editable stops)
+var iris_grad: Gradient
+var iris_ramp_tex: GradientTexture1D
+var iris_col_dark: Color = Color(0.025, 0.016, 0.010)   # dark limbal/pupil-edge fibres
+var iris_col_mid: Color = Color(0.20, 0.115, 0.050)     # rich mid brown
+var iris_col_bright: Color = Color(0.46, 0.31, 0.145)   # warm bright fleck
+# body + clothing
+var body_skin_mat: StandardMaterial3D
+var shirt_mat: StandardMaterial3D
+var pants_mat: StandardMaterial3D
+var _body_root: Node3D
+var _body_meshes: Array[MeshInstance3D] = []   # body+clothing meshes (for show_body toggle)
+var show_body: bool = true
+
+# animation / rig (head + hair ride the body Head bone so the body can animate)
+const HAIR_RIGGED: String = "res://vitruvian_hair_rigged.glb"   # spring-bone chain
+const HEAD_BONE: String = "mixamorig_Head"
+var anim: AnimationPlayer
+var skel: Skeleton3D
+var head_rig: Node3D
+var hair_spring: HairSpring
+var _anim_names: PackedStringArray = PackedStringArray()
+var _cur_clip: String = "Idle"
+var _anim_buttons: Dictionary = {}             # clip name -> Button (for highlight)
+
+# facial animation (CC0 ARKit blendshapes on the head + eyeball nodes)
+var face_mi: MeshInstance3D
+var bshapes: Dictionary = {}
+var eye_nodes: Array = []
+var upper_lids: Array = []          # [{node, rest_basis}] upper eyelids (rotate down to blink)
+# Godot 4.6.3 won't RENDER blend shapes on this mesh (data is fine, render is broken),
+# so we morph the vertices DIRECTLY at runtime instead. _morph_* holds the base mesh +
+# per-shape position deltas; _apply_morph rebuilds the surface when weights change.
+var _morph_arrays: Array = []
+var _morph_base: PackedVector3Array
+var _morph_deltas: Dictionary = {}  # shape name -> PackedVector3Array delta
+var _morph_mat: Material
+var _morph_key: String = "_init_"
+var _gaze: Vector2 = Vector2.ZERO
+var _face_mode: String = "auto"                # auto | neutral | smile | surprise | frown | blink
+var _expr_buttons: Dictionary = {}
 
 var key_light: DirectionalLight3D
 var fill_light: DirectionalLight3D
@@ -156,8 +204,48 @@ func _ready() -> void:
 	if not _load_and_wire():
 		push_error("[vit] failed to load/wire head")
 		return
+	# Godot 4.6.3 does NOT render native blend-shape deformation on this imported
+	# glTF morph mesh (set_blend_shape_value is silently a no-op visually). Capture
+	# the per-shape vertex deltas and drive the face by REBUILDING the surface on the
+	# CPU each time the weights change (_apply_morph). This is the only path that
+	# actually moves the mouth/brows on screen.
+	_setup_face_morph()
 	_build_ui()
 	_update_orbit_camera()
+	if OS.has_environment("FACE_FORCE"):
+		# inspection hook: hold an expression, hide hair/UI, frame the face
+		_set_face_mode(OS.get_environment("FACE_FORCE"))
+		if OS.has_environment("HIDE_FACE") and face_mi:
+			face_mi.visible = false
+			print("[face] HID face_mi=", face_mi.get_path())
+		if _ui_layer: _ui_layer.visible = false
+		if head_rig:
+			var h: Node = head_rig.get_node_or_null("Hair")
+			if h: (h as Node3D).visible = false
+		orbit_target = Vector3(0.0, 1.60, 0.0); orbit_dist = 0.95; orbit_yaw = -10.0; orbit_pitch = 2.0
+		_update_orbit_camera()
+	if OS.has_environment("HIDE_LIDS"):
+		for l in upper_lids: (l["node"] as Node3D).visible = false
+		if head_rig:
+			for c in head_rig.find_children("Lid*", "MeshInstance3D", true, false):
+				(c as Node3D).visible = false
+	if OS.has_environment("CLIP") and anim and anim.has_animation(OS.get_environment("CLIP")):
+		anim.play(OS.get_environment("CLIP"))
+		_cur_clip = OS.get_environment("CLIP")
+	if OS.has_environment("EYE_SHOT"):
+		if _ui_layer: _ui_layer.visible = false
+		if head_rig:
+			var hh: Node = head_rig.get_node_or_null("Hair")
+			if hh: (hh as Node3D).visible = false
+		orbit_target = Vector3(0.0, 1.626, -0.05); orbit_dist = 0.34; orbit_yaw = -8.0; orbit_pitch = -2.0
+		_update_orbit_camera()
+	if OS.has_environment("HAIR_SHOT"):
+		if _ui_layer: _ui_layer.visible = false
+		var yaw: float = float(OS.get_environment("HAIR_SHOT")) if OS.get_environment("HAIR_SHOT").is_valid_float() else -18.0
+		orbit_target = Vector3(0.0, 1.50, 0.0); orbit_dist = 1.05; orbit_yaw = yaw; orbit_pitch = 4.0
+		_update_orbit_camera()
+	if OS.has_environment("FRAME_BODY"):
+		_frame_view("full")
 	if not OS.has_environment("NO_LOAD_SETTINGS"):
 		_load_settings()
 	if OS.has_environment("LOOKDEV_CAPTURE"):
@@ -169,6 +257,15 @@ func _ready() -> void:
 
 func _process(delta: float) -> void:
 	_time += delta
+	var _shot_at: float = float(OS.get_environment("SHOT_AT")) if OS.get_environment("SHOT_AT").is_valid_float() else (3.0 if OS.has_environment("HAIR_SHOT") else 1.0)
+	if (OS.has_environment("UI_SHOT") or OS.has_environment("HAIR_SHOT")) and _time > _shot_at and _cap_prefix == "":
+		_cap_prefix = "_uishot_done"   # guard so we only grab once
+		_grab(ProjectSettings.globalize_path("res://").path_join("..").path_join("out").path_join("ui_shot.png"))
+		get_tree().quit()
+		return
+	if hair_spring:
+		hair_spring.step(delta)
+	_drive_face(delta)
 	if _toast_label and _toast_until > 0.0 and _time > _toast_until:
 		_toast_label.visible = false
 		_toast_until = 0.0
@@ -190,6 +287,8 @@ func _capture_tick() -> void:
 	if _cap_frame == 24:
 		_grab("%s_a.png" % _cap_prefix)
 	elif _cap_frame == 30:
+		if OS.has_environment("FRAME_BODY"):
+			orbit_yaw = 22.0; _update_orbit_camera(); return
 		if skin_mats.size() > 0:
 			skin_mats[0].set_shader_parameter("subsurface_scattering_strength", 0.85)
 		orbit_yaw = 18.0
@@ -305,7 +404,7 @@ func _setup_lights() -> void:
 	# High specular + the cards' anisotropy = a strand-flow highlight band on top.
 	hair_light = DirectionalLight3D.new()
 	hair_light.name = "HairLight"
-	hair_light.light_energy = 2.2
+	hair_light.light_energy = 3.2
 	hair_light.light_specular = 0.1
 	hair_light.light_color = Color(1.0, 0.94, 0.82)
 	_apply_light_rot(hair_light, hair_light_pitch, hair_light_yaw)
@@ -320,11 +419,11 @@ func _setup_lights() -> void:
 
 	catch_light = OmniLight3D.new()
 	catch_light.name = "CatchLight"
-	catch_light.light_energy = 0.12
+	catch_light.light_energy = 1.6 # bright eye-spark (was 0.12 = dead eyes)
 	catch_light.light_specular = 1.0
 	catch_light.light_color = Color(1.0, 0.98, 0.95)
-	catch_light.omni_range = 1.2
-	catch_light.omni_attenuation = 2.4
+	catch_light.omni_range = 0.9                # localized to the face so it's a spark, not a fill
+	catch_light.omni_attenuation = 2.6
 	catch_light.position = Vector3(0.22, 1.78, 0.45)
 	add_child(catch_light)
 
@@ -348,23 +447,60 @@ func _setup_camera() -> void:
 # ── Material wiring ─────────────────────────────────────────────────────────
 
 func _load_and_wire() -> bool:
+	# ── BODY first: provides the Skeleton3D + AnimationPlayer the head/hair ride ──
+	if ResourceLoader.exists(BODY_GLB):
+		var bscene: PackedScene = load(BODY_GLB)
+		if bscene:
+			var body: Node = bscene.instantiate()
+			body.name = "Body"
+			_character.add_child(body)
+			_body_root = body as Node3D
+			skel = _find_class(body, "Skeleton3D") as Skeleton3D
+			anim = _find_class(body, "AnimationPlayer") as AnimationPlayer
+			var bmeshes: Array[MeshInstance3D] = []
+			_collect_meshes(body, bmeshes)
+			for bmi in bmeshes:
+				_body_meshes.append(bmi)
+				for s in range(bmi.mesh.get_surface_count()):
+					var bm2: Material = bmi.mesh.surface_get_material(s)
+					var bnm: String = (bm2.resource_name if bm2 else "").split(".")[0]
+					match bnm:
+						"VitShirt": bmi.set_surface_override_material(s, _make_shirt())
+						"VitPants": bmi.set_surface_override_material(s, _make_pants())
+						_:          bmi.set_surface_override_material(s, _make_body_skin())
+			if anim:
+				for a in anim.get_animation_list():
+					anim.get_animation(a).loop_mode = Animation.LOOP_LINEAR
+				_anim_names = anim.get_animation_list()
+
+	# ── HEAD + HAIR ride the Head bone (so the body can animate) ──
+	var head_parent: Node = _character
+	if skel:
+		var hbi: int = skel.find_bone(HEAD_BONE)
+		if hbi >= 0:
+			var att: BoneAttachment3D = BoneAttachment3D.new()
+			att.name = "HeadAttach"
+			skel.add_child(att)
+			att.bone_idx = hbi
+			head_rig = Node3D.new()
+			head_rig.name = "HeadRig"
+			att.add_child(head_rig)
+			head_rig.global_transform = Transform3D.IDENTITY   # world-aligned at rest
+			head_parent = head_rig
+
 	var hscene: PackedScene = load(HEAD_GLB)
 	if hscene == null:
-		return false
+		return skel != null
 	var head: Node = hscene.instantiate()
 	head.name = "Head"
-	_character.add_child(head)
+	head_parent.add_child(head)
 	if OS.has_environment("HIDE_HEAD"):
 		(head as Node3D).visible = false
-
 	var meshes: Array[MeshInstance3D] = []
 	_collect_meshes(head, meshes)
 	for mi in meshes:
-		var mesh: Mesh = mi.mesh
-		for s in range(mesh.get_surface_count()):
-			var m: Material = mesh.surface_get_material(s)
-			# Match by PREFIX — glTF/Blender may append ".001" to duplicated
-			# material names (this silently blanked the 2nd eye before).
+		for s in range(mi.mesh.get_surface_count()):
+			var m: Material = mi.mesh.surface_get_material(s)
 			var nm: String = (m.resource_name if m else "").split(".")[0]
 			match nm:
 				"VitSkin":    mi.set_surface_override_material(s, _make_skin())
@@ -374,21 +510,281 @@ func _load_and_wire() -> bool:
 				"VitScalp":   mi.set_surface_override_material(s, _make_scalp())
 				"VitLash":    mi.set_surface_override_material(s, _make_lash())
 				_:            pass
+		# capture the face mesh (ARKit blend shapes) + eyeball spheres for the face driver
+		if mi.mesh.get_blend_shape_count() > 0 and face_mi == null:
+			face_mi = mi
+			for bi in range(mi.mesh.get_blend_shape_count()):
+				bshapes[String(mi.mesh.get_blend_shape_name(bi))] = bi
+		if mi.name.begins_with("Eye_"):
+			eye_nodes.append({"node": mi, "rest_basis": mi.transform.basis, "rest_pos": mi.position})
+		if mi.name.begins_with("LidUp"):
+			upper_lids.append({"node": mi, "rest_basis": mi.transform.basis})
 
-	if ResourceLoader.exists(HAIR_GLB):
-		var hairscene: PackedScene = load(HAIR_GLB)
+	if OS.has_environment("DUMP_HEAD"):
+		for mi in meshes:
+			var mats: Array = []
+			for s in range(mi.mesh.get_surface_count()):
+				var mm: Material = mi.mesh.surface_get_material(s)
+				mats.append(mm.resource_name if mm else "?")
+			var am2: ArrayMesh = mi.mesh as ArrayMesh
+			var vc: int = -1
+			if am2: vc = (am2.surface_get_arrays(0)[Mesh.ARRAY_VERTEX] as PackedVector3Array).size()
+			print("[DUMP] mi=", mi.name, " path=", mi.get_path(),
+				" surf=", mi.mesh.get_surface_count(), " mats=", mats,
+				" bs=", mi.mesh.get_blend_shape_count(), " verts=", vc,
+				" visible=", mi.visible, " skin=", mi.skin != null,
+				" skel=", mi.skeleton)
+
+	# ── HAIR — rigged spring-bone chain (physics), rides the head, collides with body ──
+	var hair_src: String = HAIR_RIGGED if ResourceLoader.exists(HAIR_RIGGED) else HAIR_GLB
+	if ResourceLoader.exists(hair_src):
+		var hairscene: PackedScene = load(hair_src)
 		if hairscene:
 			var hair: Node = hairscene.instantiate()
 			hair.name = "Hair"
-			_character.add_child(hair)
+			head_parent.add_child(hair)
 			var hmeshes: Array[MeshInstance3D] = []
 			_collect_meshes(hair, hmeshes)
 			for hm in hmeshes:
-				var is_brow: bool = hm.name.begins_with("VitBrow")
-				var hmat: ShaderMaterial = _make_browcards() if is_brow else _make_hair()
+				if hm.name.begins_with("VitBrow"):
+					continue
+				var hmat: ShaderMaterial = _make_hair()
 				for s in range(hm.mesh.get_surface_count()):
 					hm.set_surface_override_material(s, hmat)
+			var hsk: Skeleton3D = _find_class(hair, "Skeleton3D") as Skeleton3D
+			if hsk and skel:
+				hair_spring = HairSpring.new()
+				hair.add_child(hair_spring)
+				hair_spring.setup(hsk)
+				hair_spring.set_body_colliders(skel)
+
+	# ── Eyebrows from the legacy hair GLB (brow meshes only), on the head ──
+	if ResourceLoader.exists(HAIR_GLB_LEGACY):
+		var legacy: PackedScene = load(HAIR_GLB_LEGACY)
+		if legacy:
+			var lhair: Node = legacy.instantiate()
+			lhair.name = "HairLegacyBrows"
+			head_parent.add_child(lhair)
+			var lmeshes: Array[MeshInstance3D] = []
+			_collect_meshes(lhair, lmeshes)
+			for lm in lmeshes:
+				if lm.name.begins_with("VitBrow"):
+					var bmat: ShaderMaterial = _make_browcards()
+					for s in range(lm.mesh.get_surface_count()):
+						lm.set_surface_override_material(s, bmat)
+				else:
+					lm.visible = false
+
+	for bmi2 in _body_meshes:
+		bmi2.visible = show_body
+	if anim and anim.has_animation("Idle"):
+		anim.play("Idle")
+		_cur_clip = "Idle"
+	print("[vit] rig: skel=", skel != null, " anim=", anim != null, " clips=", _anim_names,
+		" face_shapes=", bshapes.size(), " eyes=", eye_nodes.size())
 	return true
+
+
+func _setup_face_morph() -> void:
+	# Grab the base surface + per-shape deltas, then swap in a unique ArrayMesh we rebuild.
+	if face_mi == null:
+		return
+	var am: ArrayMesh = face_mi.mesh as ArrayMesh
+	if am == null or am.get_blend_shape_count() == 0:
+		return
+	# keep only standard channels (imported meshes carry CUSTOM/byte channels that
+	# add_surface_from_arrays rejects)
+	var src: Array = am.surface_get_arrays(0)
+	_morph_arrays = []; _morph_arrays.resize(Mesh.ARRAY_MAX)
+	for idx in [Mesh.ARRAY_VERTEX, Mesh.ARRAY_NORMAL, Mesh.ARRAY_TANGENT, Mesh.ARRAY_TEX_UV, Mesh.ARRAY_INDEX]:
+		if idx < src.size() and src[idx] != null:
+			_morph_arrays[idx] = src[idx]
+	_morph_base = _morph_arrays[Mesh.ARRAY_VERTEX]
+	var bsa: Array = am.surface_get_blend_shape_arrays(0)
+	for bi in range(am.get_blend_shape_count()):
+		var sv: PackedVector3Array = bsa[bi][Mesh.ARRAY_VERTEX]
+		var dl: PackedVector3Array = PackedVector3Array(); dl.resize(sv.size())
+		for i in range(sv.size()):
+			dl[i] = sv[i] - _morph_base[i]
+		_morph_deltas[String(am.get_blend_shape_name(bi))] = dl
+	_morph_mat = face_mi.get_surface_override_material(0)
+	# unique mesh without blend shapes (their renderer is broken in 4.6.3)
+	var test_arrays: Array = _morph_arrays.duplicate()
+	if OS.has_environment("SHRINK_TEST"):
+		var jd2: PackedVector3Array = _morph_deltas.get("jawOpen", PackedVector3Array())
+		var sv2: PackedVector3Array = PackedVector3Array(); sv2.resize(_morph_base.size())
+		for i in range(_morph_base.size()): sv2[i] = _morph_base[i] + (jd2[i] if i < jd2.size() else Vector3.ZERO) * 4.0
+		test_arrays[Mesh.ARRAY_VERTEX] = sv2
+		_face_mode = "__raw__"   # stop _drive_face from overwriting this baked test mesh
+		print("[face] SHRINK_TEST: baked jawOpen*4 into the setup mesh")
+	var fresh: ArrayMesh = ArrayMesh.new()
+	fresh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, test_arrays)
+	face_mi.mesh = fresh
+	if _morph_mat: face_mi.set_surface_override_material(0, _morph_mat)
+	var jd: float = 0.0
+	if _morph_deltas.has("jawOpen"):
+		for v in (_morph_deltas["jawOpen"] as PackedVector3Array): jd = maxf(jd, v.length())
+	print("[vit] face morph: base verts=", _morph_base.size(), " shapes=", _morph_deltas.size(),
+		" jawOpen_maxdelta=", jd)
+
+
+func _apply_morph(weights: Dictionary) -> void:
+	# rebuild the face surface = base + Σ weight*delta (only when the weights change)
+	if _morph_base.is_empty():
+		return
+	var key: String = ""
+	for n in weights:
+		if absf(weights[n]) > 0.004:
+			key += "%s%.2f," % [n, weights[n]]
+	if key == _morph_key:
+		return
+	_morph_key = key
+	var verts: PackedVector3Array = _morph_base.duplicate()
+	for n in weights:
+		var w: float = weights[n]
+		if absf(w) < 0.004 or not _morph_deltas.has(n):
+			continue
+		var dl: PackedVector3Array = _morph_deltas[n]
+		for i in range(verts.size()):
+			verts[i] += dl[i] * w
+	var maxd: float = 0.0
+	for i in range(verts.size()): maxd = maxf(maxd, verts[i].distance_to(_morph_base[i]))
+	var arrays: Array = _morph_arrays.duplicate()
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	var m: ArrayMesh = ArrayMesh.new()
+	m.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	face_mi.mesh = m                                  # reassign forces a GPU refresh
+	if _morph_mat: face_mi.set_surface_override_material(0, _morph_mat)
+	if OS.has_environment("FACE_FORCE"):
+		print("[morph] key=", key, " maxdisp=", maxd, " surfs=", m.get_surface_count())
+
+
+func _find_class(node: Node, cls: String) -> Node:
+	if node.get_class() == cls:
+		return node
+	for c in node.get_children():
+		var r: Node = _find_class(c, cls)
+		if r:
+			return r
+	return null
+
+
+# ── animation + facial control ───────────────────────────────────────────────
+const FACE_POSES: Dictionary = {
+	"neutral": {},
+	"smile": {"mouthSmileLeft": 1.0, "mouthSmileRight": 1.0, "cheekSquintLeft": 0.5, "cheekSquintRight": 0.5},
+	"surprise": {"jawOpen": 0.58, "browInnerUp": 1.0, "browOuterUpLeft": 0.85, "browOuterUpRight": 0.85, "eyeWideLeft": 1.0, "eyeWideRight": 1.0},
+	"jawopen": {"jawOpen": 1.0},
+	"talk": {"jawOpen": 0.45, "mouthFunnel": 0.3},
+	"frown": {"mouthFrownLeft": 0.95, "mouthFrownRight": 0.95, "browDownLeft": 0.85, "browDownRight": 0.85, "mouthLowerDownLeft": 0.35, "mouthLowerDownRight": 0.35},
+	"blink": {},   # eyes blink via the lid geometry (blink_amt), not a morph
+}
+
+
+func _sshape(n: String, v: float) -> void:
+	if face_mi and bshapes.has(n):
+		face_mi.set_blend_shape_value(bshapes[n], v)
+
+
+func _play_clip(clip: String) -> void:
+	if anim and anim.has_animation(clip):
+		anim.play(clip, 0.3)
+		_cur_clip = clip
+		_refresh_btn_tint(_anim_buttons, clip)
+
+
+func _set_face_mode(mode: String) -> void:
+	_face_mode = mode
+	_refresh_btn_tint(_expr_buttons, mode)
+
+
+func _refresh_btn_tint(dict: Dictionary, active: String) -> void:
+	for key in dict:
+		var b: Button = dict[key]
+		b.modulate = Color(0.6, 0.85, 1.0) if key == active else Color(1, 1, 1)
+
+
+func _drive_face(delta: float) -> void:
+	if face_mi == null or _face_mode == "__raw__":
+		return
+	# build this frame's morph weight set, then rebuild the surface via _apply_morph
+	# (native set_blend_shape_value does not render on this mesh in Godot 4.6.3).
+	var weights: Dictionary = {}
+	var saccade: bool = true
+	var blink_amt: float = 0.0
+	if _face_mode == "auto":
+		var bt: float = fmod(_time + 0.6, 3.0)
+		blink_amt = sin(bt / 0.18 * PI) if bt < 0.18 else 0.0   # a blink every 3s
+		weights["mouthSmileLeft"] = 0.32; weights["mouthSmileRight"] = 0.32
+		# a slow breathing micro-expression so the resting face isn't frozen
+		var em: float = 0.5 + 0.5 * sin(_time * 0.6)
+		weights["browInnerUp"] = 0.10 * em
+	else:
+		var pose: Dictionary = FACE_POSES.get(_face_mode, {})
+		for k in pose:
+			weights[k] = pose[k]
+		if _face_mode == "blink":
+			blink_amt = 1.0
+			saccade = false
+	_apply_morph(weights)
+	# blink: sweep the upper eyelid DOWN over the eye (real geometry, not a weak morph)
+	if upper_lids.size() > 0:
+		var ang: float = blink_amt * deg_to_rad(60.0)
+		for l in upper_lids:
+			(l["node"] as MeshInstance3D).transform.basis = Basis(Vector3(1, 0, 0), -ang) * (l["rest_basis"] as Basis)
+	# eye saccades (don't dart while the eye is shut)
+	if saccade and blink_amt < 0.4 and eye_nodes.size() > 0:
+		var k: int = int(_time / 2.0)
+		var target: Vector2 = Vector2(sin(float(k) * 12.9898) * 0.22, sin(float(k) * 4.1413) * 0.13)
+		_gaze = _gaze.lerp(target, clampf(delta * 16.0, 0.0, 1.0))
+		var gr: Basis = Basis.from_euler(Vector3(_gaze.y, 0.0, -_gaze.x))
+		if not OS.has_environment("NO_SACCADE"):
+			for e in eye_nodes:
+				(e["node"] as MeshInstance3D).transform.basis = gr * (e["rest_basis"] as Basis)
+
+
+# ── one-click lighting presets ───────────────────────────────────────────────
+func _apply_light_preset(name: String) -> void:
+	match name:
+		"Portrait":
+			key_light.light_energy = 3.2; key_light.light_color = Color(1.0, 0.90, 0.76)
+			key_yaw = -81.0; key_pitch = -30.0
+			fill_light.light_energy = 0.9; fill_light.light_color = Color(0.85, 0.84, 0.82)
+			fill_yaw = 21.0; fill_pitch = 13.0
+			rim_light.light_energy = 1.9; rim_light.light_color = Color(0.40, 0.62, 1.0)
+			rim_yaw = 51.0; rim_pitch = -45.0
+			hair_light.light_energy = 3.2
+			env.ambient_light_energy = 0.10; env.tonemap_exposure = 1.0
+		"Studio":
+			key_light.light_energy = 2.4; key_light.light_color = Color(1.0, 0.98, 0.95)
+			key_yaw = -55.0; key_pitch = -28.0
+			fill_light.light_energy = 1.7; fill_light.light_color = Color(0.92, 0.94, 1.0)
+			fill_yaw = 46.0; fill_pitch = 10.0
+			rim_light.light_energy = 1.2; rim_light.light_color = Color(0.9, 0.93, 1.0)
+			rim_yaw = 150.0; rim_pitch = -40.0
+			hair_light.light_energy = 1.8
+			env.ambient_light_energy = 0.55; env.tonemap_exposure = 1.0
+		"Dramatic":
+			key_light.light_energy = 1.7; key_light.light_color = Color(1.0, 0.95, 0.87)
+			key_yaw = -62.0; key_pitch = -22.0
+			fill_light.light_energy = 0.07; fill_light.light_color = Color(0.45, 0.60, 1.0)
+			fill_yaw = 46.0; fill_pitch = 10.0
+			rim_light.light_energy = 2.6; rim_light.light_color = Color(0.5, 0.7, 1.0)
+			rim_yaw = 145.0; rim_pitch = -38.0
+			hair_light.light_energy = 2.6
+			env.ambient_light_energy = 0.05; env.tonemap_exposure = 0.82
+		"Backlit":
+			key_light.light_energy = 1.0; key_light.light_color = Color(1.0, 0.92, 0.82)
+			key_yaw = -70.0; key_pitch = -24.0
+			fill_light.light_energy = 0.4; fill_light.light_color = Color(0.7, 0.8, 1.0)
+			rim_light.light_energy = 4.2; rim_light.light_color = Color(0.7, 0.82, 1.0)
+			rim_yaw = 165.0; rim_pitch = -30.0
+			hair_light.light_energy = 3.4
+			env.ambient_light_energy = 0.12; env.tonemap_exposure = 0.95
+	_apply_light_rot(key_light, key_pitch, key_yaw)
+	_apply_light_rot(fill_light, fill_pitch, fill_yaw)
+	_apply_light_rot(rim_light, rim_pitch, rim_yaw)
+	_toast("Lighting: " + name)
 
 
 func _collect_meshes(node: Node, out: Array[MeshInstance3D]) -> void:
@@ -438,32 +834,52 @@ func _make_skin() -> ShaderMaterial:
 
 func _iris_ramp() -> GradientTexture1D:
 	# Iris fibre colour ramp (sampled by the procedural voronoi luminance).
-	var g: Gradient = Gradient.new()
-	g.set_color(0, Color(0.05, 0.035, 0.02))    # dark fibres
-	g.add_point(0.5, Color(0.32, 0.20, 0.09))   # mid amber-brown
-	g.set_color(1, Color(0.55, 0.40, 0.20))     # bright limbal
-	var t: GradientTexture1D = GradientTexture1D.new()
-	t.gradient = g
-	t.width = 256
-	return t
+	# Shared across both eyes; the 3 stops are live-editable via the Eyes sliders.
+	if iris_ramp_tex == null:
+		iris_grad = Gradient.new()
+		iris_grad.set_color(0, iris_col_dark)
+		iris_grad.add_point(0.5, iris_col_mid)
+		iris_grad.set_color(1, iris_col_bright)
+		iris_ramp_tex = GradientTexture1D.new()
+		iris_ramp_tex.gradient = iris_grad
+		iris_ramp_tex.width = 256
+	return iris_ramp_tex
+
+
+func _rebuild_iris_ramp() -> void:
+	if iris_grad == null:
+		return
+	iris_grad.set_color(0, iris_col_dark)
+	# middle stop is index 1 (we added a point at 0.5)
+	if iris_grad.get_point_count() >= 3:
+		iris_grad.set_color(1, iris_col_mid)
+		iris_grad.set_color(2, iris_col_bright)
+	else:
+		iris_grad.set_color(1, iris_col_bright)
+	iris_ramp_tex.gradient = iris_grad   # nudge the texture to regenerate
 
 
 func _make_eyeball() -> ShaderMaterial:
 	# Procedural iris/pupil/sclera (blackears eyeball_shader, MIT) — radial UV.
 	var mat: ShaderMaterial = ShaderMaterial.new()
 	mat.shader = load("res://addons/eyeball_shader/shaders/eyeball_shader.gdshader") as Shader
-	mat.set_shader_parameter("iris_radius", 0.34)
-	mat.set_shader_parameter("iris_margin", 0.03)
-	mat.set_shader_parameter("pupil_radius", 0.13)
-	mat.set_shader_parameter("eye_white", Color(0.92, 0.90, 0.88))
-	mat.set_shader_parameter("pupil_color", Color(0.02, 0.02, 0.025))
+	mat.set_shader_parameter("iris_radius", 0.32)
+	mat.set_shader_parameter("iris_margin", 0.018)
+	mat.set_shader_parameter("pupil_radius", 0.10)
+	mat.set_shader_parameter("eye_white", Color(0.86, 0.83, 0.80))
+	mat.set_shader_parameter("pupil_color", Color(0.012, 0.010, 0.014))
 	mat.set_shader_parameter("texture_iris_color", _iris_ramp())
-	mat.set_shader_parameter("eye_cell_scale", 17.0)
-	mat.set_shader_parameter("eye_cell_jitter", 0.6)
-	mat.set_shader_parameter("iris_pinch", 0.6)
+	mat.set_shader_parameter("eye_cell_scale", 19.0)
+	mat.set_shader_parameter("eye_cell_jitter", 0.7)
+	mat.set_shader_parameter("iris_pinch", 0.72)
+	mat.set_shader_parameter("eyeball_roughness", 0.22)
+	mat.set_shader_parameter("eyeball_specular", 0.7)
+	mat.set_shader_parameter("sclera_shade", 0.55)
+	mat.set_shader_parameter("sclera_edge_tint", Color(0.80, 0.66, 0.60))
 	mat.set_shader_parameter("rand_seed", 12345)
 	mat.set_shader_parameter("uv1_scale", Vector3(1, 1, 1))
 	mat.set_shader_parameter("uv1_offset", Vector3(0, 0, 0))
+	eyeball_mats.append(mat)
 	return mat
 
 
@@ -471,9 +887,10 @@ func _make_cornea() -> ShaderMaterial:
 	# Glassy additive specular shell over the eyeball (blackears cornea, MIT).
 	var mat: ShaderMaterial = ShaderMaterial.new()
 	mat.shader = load("res://addons/eyeball_shader/shaders/cornea.gdshader") as Shader
-	mat.set_shader_parameter("shininess", 360.0)
-	mat.set_shader_parameter("spec_intensity", 0.32)
-	mat.set_shader_parameter("alpha_max", 0.8)
+	mat.set_shader_parameter("shininess", 480.0)
+	mat.set_shader_parameter("spec_intensity", 0.5)
+	mat.set_shader_parameter("alpha_max", 0.7)
+	cornea_mats.append(mat)
 	return mat
 
 
@@ -486,27 +903,45 @@ func _make_mouth() -> StandardMaterial3D:
 	return m
 
 
+func _make_body_skin() -> StandardMaterial3D:
+	# Flat skin tone for exposed body (hands/forearms/feet/neck); clothing covers the
+	# rest. Tone sampled from the CharMorph body skin EXR (tile 1002).
+	if body_skin_mat == null:
+		body_skin_mat = StandardMaterial3D.new()
+		body_skin_mat.albedo_color = Color(0.69, 0.53, 0.49)   # ~sRGB of sampled linear tone
+		body_skin_mat.roughness = 0.62
+		body_skin_mat.metallic = 0.0
+		body_skin_mat.metallic_specular = 0.4
+		body_skin_mat.subsurf_scatter_enabled = true
+		body_skin_mat.subsurf_scatter_strength = 0.25
+	return body_skin_mat
+
+
+func _make_shirt() -> StandardMaterial3D:
+	if shirt_mat == null:
+		shirt_mat = StandardMaterial3D.new()
+		shirt_mat.albedo_color = Color(0.18, 0.22, 0.30)   # muted blue tee
+		shirt_mat.roughness = 0.85
+		shirt_mat.metallic = 0.0
+	return shirt_mat
+
+
+func _make_pants() -> StandardMaterial3D:
+	if pants_mat == null:
+		pants_mat = StandardMaterial3D.new()
+		pants_mat.albedo_color = Color(0.12, 0.12, 0.14)   # dark slacks
+		pants_mat.roughness = 0.8
+		pants_mat.metallic = 0.0
+	return pants_mat
+
+
 func _make_scalp() -> ShaderMaterial:
-	# CROWN HAIR: the dome IS what's visible on top (flat crown cards are edge-on),
-	# so scalp_cap.gdshader textures the dome as combed hair (radial strand atlas +
-	# outward normals + centre part) under the long framing locks.
+	# HELMET REMOVED: the baked VitScalp "dome" (a duplicated, pushed-out crown skin
+	# cap from the head export) is what read as a helmet whenever the hair cards were
+	# scissored away. We discard it entirely — the Hair Tool cards are the only crown
+	# hair now. (Toggle `show_scalp_base` if you ever want a dark backing again.)
 	vit_scalp_mat = ShaderMaterial.new()
-	vit_scalp_mat.shader = load("res://scenes/scalp_cap.gdshader") as Shader
-	vit_scalp_mat.set_shader_parameter("hair_color", Color(0.165, 0.118, 0.075))
-	vit_scalp_mat.set_shader_parameter("strand_atlas", _tex("res://vit_hair_atlas.png"))
-	vit_scalp_mat.set_shader_parameter("roughness_val", 0.78)
-	vit_scalp_mat.set_shader_parameter("specular_val", 0.12)
-	vit_scalp_mat.set_shader_parameter("anisotropy", 0.5)
-	vit_scalp_mat.set_shader_parameter("strand_repeats", 52.0)
-	vit_scalp_mat.set_shader_parameter("tex_strength", 1.2)
-	vit_scalp_mat.set_shader_parameter("part_darken", 0.45)
-	vit_scalp_mat.set_shader_parameter("tonal_variation", 0.4)
-	vit_scalp_mat.set_shader_parameter("emit", 0.35)
-	vit_scalp_mat.set_shader_parameter("head_center", Vector3(0.0, 1.55, 0.0))
-	# Cap carries only the CROWN (above the hairline); fade out before the forehead
-	# so it never drapes the face like a visor. Long locks cover below the hairline.
-	vit_scalp_mat.set_shader_parameter("fade_lo", 1.650)
-	vit_scalp_mat.set_shader_parameter("fade_hi", 1.680)
+	vit_scalp_mat.shader = load("res://scenes/hidden_discard.gdshader") as Shader
 	return vit_scalp_mat
 
 
@@ -527,22 +962,36 @@ func _make_hair_card(color: Color, threshold: float, root_dark: float, rough: fl
 
 
 func _make_hair() -> ShaderMaterial:
+	# HAIR TOOL CARDS: real authored cards carrying a baked strand atlas. The NORMAL
+	# map fans across each card so the crown catches the side key light (fixes the
+	# flat-dark dome), and ALPHA-SCISSOR cutout carves the dense card shell into
+	# wispy strands with gaps (fixes the solid-helmet read). Opaque cutout (not
+	# alpha-blend) → no glassy translucency across the 100k+ overlapping cards.
 	if vit_hair_mat == null:
-		# Cards LIGHTER than the dark scalp cap behind them → the combed locks read
-		# against the shadow; strong anisotropic sheen sells it as combed hair.
-		# Lessons from the Blender render: the CARDS are good — what kills the top in
-		# Godot is (a) too-low threshold smearing strands into a smooth mass and
-		# (b) near-black hair on a near-black cap = zero value range. Fix both:
-		# crisp threshold (like Blender's alpha-clip) + a lighter medium-brown value
-		# (MetaHuman scalp hair is ~0.34,0.27,0.17) so individual strands read.
-		vit_hair_mat = _make_hair_card(Color(0.105, 0.075, 0.050), 0.26, 0.5, 0.86,
-			"res://vit_hair_atlas.png", 0.05)
-		vit_hair_mat.set_shader_parameter("anisotropy", 0.3)
+		vit_hair_mat = ShaderMaterial.new()
+		vit_hair_mat.shader = load("res://scenes/hairtool_card.gdshader") as Shader
+		vit_hair_mat.set_shader_parameter("tex_diffuse", _tex("res://vit_hair_diffuse.png"))
+		vit_hair_mat.set_shader_parameter("tex_normal", _tex("res://vit_hair_normal.png"))
+		vit_hair_mat.set_shader_parameter("tex_ao", _tex("res://vit_hair_ao.png"))
+		vit_hair_mat.set_shader_parameter("tex_opacity", _tex("res://vit_hair_opacity.png"))
+		vit_hair_mat.set_shader_parameter("root_color", Color(0.34, 0.24, 0.15, 1.0))
+		vit_hair_mat.set_shader_parameter("tip_color", Color(0.66, 0.52, 0.36, 1.0))   # lighter tips = depth
+		vit_hair_mat.set_shader_parameter("brightness", 3.6)
+		vit_hair_mat.set_shader_parameter("diffuse_mix", 1.0)
+		vit_hair_mat.set_shader_parameter("normal_strength", 0.9)   # strand relief (AtC edges now soft, so safe)
+		vit_hair_mat.set_shader_parameter("flip_green", false)
+		vit_hair_mat.set_shader_parameter("ao_strength", 0.7)
+		vit_hair_mat.set_shader_parameter("roughness_val", 0.80)
+		vit_hair_mat.set_shader_parameter("specular_val", 0.14)
+		vit_hair_mat.set_shader_parameter("anisotropy_val", 0.45)   # strand-flow highlight band = the key 'hair' cue
 		vit_hair_mat.set_shader_parameter("tonal_variation", 0.55)
-		vit_hair_mat.set_shader_parameter("tip_lighten", 0.2)
-		vit_hair_mat.set_shader_parameter("edge_break", 0.35)
-		vit_hair_mat.set_shader_parameter("strand_normal", 0.0)
-		vit_hair_mat.set_shader_parameter("head_normal", 0.85)
+		vit_hair_mat.set_shader_parameter("clump_count", 55.0)
+		vit_hair_mat.set_shader_parameter("tip_lighten", 0.3)
+		vit_hair_mat.set_shader_parameter("emit", 0.2)             # lift the shadow side off black
+		vit_hair_mat.set_shader_parameter("backlight_color", Color(0.30, 0.17, 0.08, 1.0))
+		vit_hair_mat.set_shader_parameter("backlight_strength", 0.6)  # light through hair = depth
+		vit_hair_mat.set_shader_parameter("density", 1.0)
+		vit_hair_mat.set_shader_parameter("scissor", 0.10)          # carve much finer strand gaps (de-ribbon)
 	return vit_hair_mat
 
 
@@ -559,6 +1008,8 @@ func _make_lash() -> ShaderMaterial:
 	var m: ShaderMaterial = _make_hair_card(Color(0.022, 0.016, 0.013), 0.34, 0.2, 0.5,
 		"res://vit_lash_atlas.png")
 	m.set_shader_parameter("anisotropy", 0.4)
+	m.set_shader_parameter("tonal_variation", 0.15)
+	lash_mats.append(m)
 	return m
 
 
@@ -628,6 +1079,22 @@ func _reset_camera() -> void:
 	orbit_yaw = DEFAULT_CAM_YAW
 	orbit_pitch = DEFAULT_CAM_PITCH
 	orbit_dist = DEFAULT_CAM_DIST
+	_update_orbit_camera()
+
+
+func _frame_view(which: String) -> void:
+	# camera framing presets for head-bust vs full figure
+	match which:
+		"full":
+			orbit_target = Vector3(0.0, 0.95, 0.0); orbit_yaw = -16.0; orbit_pitch = 4.0
+			orbit_dist = 3.0; _orbit_fov = 40.0
+		"upper":
+			orbit_target = Vector3(0.0, 1.35, 0.0); orbit_yaw = -16.0; orbit_pitch = 4.0
+			orbit_dist = 1.4; _orbit_fov = 34.0
+		_:  # head
+			orbit_target = DEFAULT_CAM_TARGET; orbit_yaw = DEFAULT_CAM_YAW
+			orbit_pitch = DEFAULT_CAM_PITCH; orbit_dist = DEFAULT_CAM_DIST; _orbit_fov = 28.0
+	if camera: camera.fov = _orbit_fov
 	_update_orbit_camera()
 
 
@@ -722,6 +1189,84 @@ func _build_ui() -> void:
 	hero_tt.toggled.connect(_set_hero_cam)
 	vb.add_child(hero_tt)
 
+	# framing presets
+	var frame_row: HBoxContainer = HBoxContainer.new()
+	vb.add_child(frame_row)
+	var fl: Label = Label.new(); fl.text = "Frame:"; fl.add_theme_font_size_override("font_size", 12)
+	frame_row.add_child(fl)
+	for fp in [["Head", "head"], ["Upper", "upper"], ["Full body", "full"]]:
+		var fb: Button = Button.new()
+		fb.text = fp[0]
+		var which: String = fp[1]
+		fb.pressed.connect(func(): _frame_view(which))
+		frame_row.add_child(fb)
+
+	# ── ANIMATION ──
+	_hdr(vb, "Animation (Mixamo clips)")
+	var anim_grid: GridContainer = GridContainer.new()
+	anim_grid.columns = 3
+	vb.add_child(anim_grid)
+	for clip in ["Idle", "Sway", "Walk", "Turn", "Wave", "HappyIdle"]:
+		var ab: Button = Button.new()
+		ab.text = clip
+		ab.disabled = not (anim and anim.has_animation(clip))
+		ab.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var c: String = clip
+		ab.pressed.connect(func(): _play_clip(c))
+		anim_grid.add_child(ab)
+		_anim_buttons[clip] = ab
+	var apause: HBoxContainer = HBoxContainer.new()
+	vb.add_child(apause)
+	var pause_btn: Button = Button.new()
+	pause_btn.text = "Pause"
+	pause_btn.pressed.connect(func(): if anim: anim.pause())
+	apause.add_child(pause_btn)
+	var resume_btn: Button = Button.new()
+	resume_btn.text = "Resume"
+	resume_btn.pressed.connect(func(): if anim and _cur_clip != "": anim.play(_cur_clip))
+	apause.add_child(resume_btn)
+
+	# ── FACIAL EXPRESSION ──
+	_hdr(vb, "Facial expression")
+	var expr_grid: GridContainer = GridContainer.new()
+	expr_grid.columns = 3
+	vb.add_child(expr_grid)
+	for ex in ["auto", "neutral", "smile", "surprise", "frown", "blink"]:
+		var eb: Button = Button.new()
+		eb.text = ex
+		eb.disabled = bshapes.is_empty()
+		eb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var em: String = ex
+		eb.pressed.connect(func(): _set_face_mode(em))
+		expr_grid.add_child(eb)
+		_expr_buttons[ex] = eb
+
+	# ── LIGHTING PRESETS ──
+	_hdr(vb, "Lighting presets")
+	var lp_grid: GridContainer = GridContainer.new()
+	lp_grid.columns = 2
+	vb.add_child(lp_grid)
+	for lp in ["Portrait", "Studio", "Dramatic", "Backlit"]:
+		var lb: Button = Button.new()
+		lb.text = lp
+		lb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var ln: String = lp
+		lb.pressed.connect(func(): _apply_light_preset(ln))
+		lp_grid.add_child(lb)
+	_refresh_btn_tint(_anim_buttons, _cur_clip)
+	_refresh_btn_tint(_expr_buttons, _face_mode)
+
+	# ── BODY & CLOTHING ──
+	_hdr(vb, "Body & clothing")
+	_mkcheck(vb, "show_body", "show body (off = head only)", true, func(on):
+		show_body = on
+		for bmi in _body_meshes: bmi.visible = on)
+	_mkcolor(vb, "body_skin_color", "body skin", Color(0.69, 0.53, 0.49), func(c): if body_skin_mat: body_skin_mat.albedo_color = c)
+	_mkcolor(vb, "shirt_color", "shirt colour", Color(0.18, 0.22, 0.30), func(c): if shirt_mat: shirt_mat.albedo_color = c)
+	_mkslider(vb, "shirt_rough", "shirt roughness", 0.0, 1.0, 0.01, 0.85, func(v): if shirt_mat: shirt_mat.roughness = v)
+	_mkcolor(vb, "pants_color", "pants colour", Color(0.12, 0.12, 0.14), func(c): if pants_mat: pants_mat.albedo_color = c)
+	_mkslider(vb, "pants_rough", "pants roughness", 0.0, 1.0, 0.01, 0.8, func(v): if pants_mat: pants_mat.roughness = v)
+
 	# ── SKIN ──
 	_hdr(vb, "Skin")
 	_mkslider(vb, "SKIN_NRM", "normal_strength", 0.0, 8.0, 0.01, 1.0, _skin_setter("normal_strength"))
@@ -757,7 +1302,7 @@ func _build_ui() -> void:
 
 	# ── CATCHLIGHT ──
 	_hdr(vb, "Catchlight (frontal omni)")
-	_mkslider(vb, "CATCH", "energy", 0.0, 4.0, 0.01, 0.12, func(v): catch_light.light_energy = v)
+	_mkslider(vb, "CATCH", "energy", 0.0, 4.0, 0.01, 0.85, func(v): catch_light.light_energy = v)
 
 	# ── ENVIRONMENT ──
 	_hdr(vb, "Environment")
@@ -768,12 +1313,80 @@ func _build_ui() -> void:
 	_mkslider(vb, "backdrop_bright", "backdrop brightness", 0.0, 4.0, 0.01, 1.0, func(v): backdrop_bright = v; _apply_backdrop())
 	_mkcolor(vb, "backdrop_tint", "backdrop tint", Color("332d28"), func(c): backdrop_tint = c; _apply_backdrop())
 
-	# ── HAIR ──
-	_hdr(vb, "Hair")
-	_mkcolor(vb, "hair_color", "hair color", Color("19120c"), func(c): if vit_hair_mat: vit_hair_mat.set_shader_parameter("hair_color", c))
-	_mkcolor(vb, "scalp_color", "scalp color", Color("0b0806"), func(c): if vit_scalp_mat: vit_scalp_mat.set_shader_parameter("hair_color", c))
-	_mkcolor(vb, "brow_color", "eyebrow color", Color("1f160e"), func(c): if vit_brow_mat: vit_brow_mat.set_shader_parameter("hair_color", c))
-	_mkslider(vb, "hair_threshold", "hair density", 0.02, 0.7, 0.005, 0.34, func(v): if vit_hair_mat: vit_hair_mat.set_shader_parameter("alpha_threshold", v))
+	# ── HAIR (Hair Tool cards) ──
+	_hdr(vb, "Hair — colour")
+	_mkcolor(vb, "hair_root_color", "root colour", Color(0.50, 0.40, 0.28), _hair_set_c("root_color"))
+	_mkcolor(vb, "hair_tip_color", "tip colour", Color(0.62, 0.50, 0.36), _hair_set_c("tip_color"))
+	_mkslider(vb, "hair_brightness", "brightness", 0.0, 8.0, 0.01, 3.4, _hair_set("brightness"))
+	_mkslider(vb, "hair_diffuse_mix", "use baked texture", 0.0, 1.0, 0.01, 1.0, _hair_set("diffuse_mix"))
+	_mkslider(vb, "hair_tonal", "lock-to-lock variation", 0.0, 1.0, 0.01, 0.7, _hair_set("tonal_variation"))
+	_mkslider(vb, "hair_clumps", "variation clump count", 4.0, 80.0, 1.0, 28.0, _hair_set("clump_count"))
+	_mkslider(vb, "hair_tip_lighten", "tip lighten", 0.0, 1.0, 0.01, 0.18, _hair_set("tip_lighten"))
+
+	_hdr(vb, "Hair — shape / coverage")
+	_mkslider(vb, "hair_density", "density (fuller→wispier)", 0.2, 3.0, 0.01, 1.0, _hair_set("density"))
+	_mkslider(vb, "hair_scissor", "cutout threshold", 0.0, 0.95, 0.005, 0.12, _hair_set("scissor"))
+	_mkslider(vb, "hair_normal", "normal strength", 0.0, 4.0, 0.01, 1.0, _hair_set("normal_strength"))
+	_mkcheck(vb, "hair_flip_green", "flip normal green", false, _hair_set_b("flip_green"))
+
+	_hdr(vb, "Hair — shading")
+	_mkslider(vb, "hair_rough", "roughness", 0.0, 1.0, 0.01, 0.76, _hair_set("roughness_val"))
+	_mkslider(vb, "hair_spec", "specular", 0.0, 1.0, 0.01, 0.25, _hair_set("specular_val"))
+	_mkslider(vb, "hair_aniso", "anisotropy (strand sheen)", -1.0, 1.0, 0.01, 0.4, _hair_set("anisotropy_val"))
+	_mkslider(vb, "hair_ao", "AO strength", 0.0, 1.0, 0.01, 0.6, _hair_set("ao_strength"))
+	_mkslider(vb, "hair_emit", "shadow lift (emission)", 0.0, 1.0, 0.01, 0.15, _hair_set("emit"))
+	_mkcolor(vb, "hair_backlight_color", "backlight tint", Color(0.18, 0.10, 0.05), _hair_set_c("backlight_color"))
+	_mkslider(vb, "hair_backlight", "backlight (light-thru)", 0.0, 1.0, 0.01, 0.0, _hair_set("backlight_strength"))
+	_mkcolor(vb, "scalp_color", "scalp base colour", Color(0.05, 0.035, 0.024), func(c): if vit_scalp_mat: vit_scalp_mat.set_shader_parameter("hair_color", c))
+
+	# ── HAIR / KICKER LIGHT ──
+	_hdr(vb, "Hair light (kicker)")
+	_mkslider(vb, "hairlight_energy", "energy", 0.0, 8.0, 0.01, 3.2, func(v): hair_light.light_energy = v)
+	_mkcolor(vb, "hairlight_color", "color", Color("ffefd1"), func(c): hair_light.light_color = c)
+	_mkslider(vb, "hairlight_spec", "specular", 0.0, 1.0, 0.01, 0.1, func(v): hair_light.light_specular = v)
+	_mkslider(vb, "hairlight_yaw", "yaw", -180.0, 180.0, 1.0, hair_light_yaw, func(v): hair_light_yaw = v; _apply_light_rot(hair_light, hair_light_pitch, hair_light_yaw))
+	_mkslider(vb, "hairlight_pitch", "pitch", -90.0, 30.0, 1.0, hair_light_pitch, func(v): hair_light_pitch = v; _apply_light_rot(hair_light, hair_light_pitch, hair_light_yaw))
+
+	# ── EYEBROWS ──
+	_hdr(vb, "Eyebrows")
+	_mkcolor(vb, "brow_color", "eyebrow colour", Color("1f160e"), func(c): if vit_brow_mat: vit_brow_mat.set_shader_parameter("hair_color", c))
+	_mkslider(vb, "brow_threshold", "density", 0.02, 0.7, 0.005, 0.28, func(v): if vit_brow_mat: vit_brow_mat.set_shader_parameter("alpha_threshold", v))
+
+	# ── EYELASHES ──
+	_hdr(vb, "Eyelashes")
+	_mkcolor(vb, "lash_color", "colour", Color(0.022, 0.016, 0.013), _lash_set_c("hair_color"))
+	_mkslider(vb, "lash_threshold", "density", 0.02, 0.8, 0.005, 0.34, _lash_set("alpha_threshold"))
+	_mkslider(vb, "lash_root_dark", "root darkening", 0.0, 1.0, 0.01, 0.2, _lash_set("root_darkening"))
+	_mkslider(vb, "lash_rough", "roughness", 0.0, 1.0, 0.01, 0.5, _lash_set("roughness_val"))
+	_mkslider(vb, "lash_spec", "specular", 0.0, 1.0, 0.01, 0.14, _lash_set("specular_val"))
+	_mkslider(vb, "lash_aniso", "anisotropy", 0.0, 1.0, 0.01, 0.4, _lash_set("anisotropy"))
+
+	# ── EYES (iris / pupil / sclera) ──
+	_hdr(vb, "Eyes — iris & pupil")
+	_mkslider(vb, "eye_iris_radius", "iris radius", 0.05, 0.6, 0.005, 0.32, _eye_set("iris_radius"))
+	_mkslider(vb, "eye_iris_margin", "iris edge softness", 0.0, 0.2, 0.002, 0.018, _eye_set("iris_margin"))
+	_mkslider(vb, "eye_pupil_radius", "pupil radius", 0.02, 0.4, 0.002, 0.10, _eye_set("pupil_radius"))
+	_mkcolor(vb, "eye_pupil_color", "pupil colour", Color(0.012, 0.010, 0.014), _eye_set_c("pupil_color"))
+	_mkslider(vb, "eye_cell_scale", "iris fibre scale", 1.0, 20.0, 0.1, 19.0, _eye_set("eye_cell_scale"))
+	_mkslider(vb, "eye_cell_jitter", "iris fibre jitter", 0.0, 1.0, 0.01, 0.7, _eye_set("eye_cell_jitter"))
+	_mkslider(vb, "eye_iris_pinch", "iris pinch", 0.0, 1.0, 0.01, 0.72, _eye_set("iris_pinch"))
+
+	_hdr(vb, "Eyes — iris colour ramp")
+	_mkcolor(vb, "iris_dark", "fibre (dark)", iris_col_dark, func(c): iris_col_dark = c; _rebuild_iris_ramp())
+	_mkcolor(vb, "iris_mid", "fibre (mid)", iris_col_mid, func(c): iris_col_mid = c; _rebuild_iris_ramp())
+	_mkcolor(vb, "iris_bright", "fibre (limbal)", iris_col_bright, func(c): iris_col_bright = c; _rebuild_iris_ramp())
+
+	_hdr(vb, "Eyes — sclera & surface")
+	_mkcolor(vb, "eye_white", "sclera (white)", Color(0.86, 0.83, 0.80), _eye_set_c("eye_white"))
+	_mkslider(vb, "eye_sclera_shade", "sclera shading", 0.0, 1.0, 0.01, 0.55, _eye_set("sclera_shade"))
+	_mkcolor(vb, "eye_sclera_tint", "sclera edge tint", Color(0.80, 0.66, 0.60), _eye_set_c("sclera_edge_tint"))
+	_mkslider(vb, "eye_rough", "eyeball roughness", 0.0, 1.0, 0.01, 0.22, _eye_set("eyeball_roughness"))
+	_mkslider(vb, "eye_spec", "eyeball specular", 0.0, 1.0, 0.01, 0.7, _eye_set("eyeball_specular"))
+
+	_hdr(vb, "Eyes — cornea (wet shell)")
+	_mkslider(vb, "cornea_shininess", "shininess", 0.0, 800.0, 1.0, 480.0, _cornea_set("shininess"))
+	_mkslider(vb, "cornea_spec", "spec intensity", 0.0, 1.0, 0.01, 0.5, _cornea_set("spec_intensity"))
+	_mkslider(vb, "cornea_alpha", "max alpha", 0.0, 1.0, 0.01, 0.7, _cornea_set("alpha_max"))
 
 	# ── CAMERA / DOF ──
 	_hdr(vb, "Camera / DOF")
@@ -787,6 +1400,44 @@ func _build_ui() -> void:
 
 
 # ── Setter factories / helpers ───────────────────────────────────────────────
+
+func _hair_set(param: String) -> Callable:
+	return func(v: float) -> void:
+		if vit_hair_mat: vit_hair_mat.set_shader_parameter(param, v)
+
+func _hair_set_c(param: String) -> Callable:
+	return func(c: Color) -> void:
+		if vit_hair_mat: vit_hair_mat.set_shader_parameter(param, c)
+
+func _hair_set_b(param: String) -> Callable:
+	return func(on: bool) -> void:
+		if vit_hair_mat: vit_hair_mat.set_shader_parameter(param, on)
+
+func _lash_set(param: String) -> Callable:
+	return func(v: float) -> void:
+		for m in lash_mats:
+			m.set_shader_parameter(param, v)
+
+func _lash_set_c(param: String) -> Callable:
+	return func(c: Color) -> void:
+		for m in lash_mats:
+			m.set_shader_parameter(param, c)
+
+func _eye_set(param: String) -> Callable:
+	return func(v: float) -> void:
+		for m in eyeball_mats:
+			m.set_shader_parameter(param, v)
+
+func _eye_set_c(param: String) -> Callable:
+	return func(c: Color) -> void:
+		for m in eyeball_mats:
+			m.set_shader_parameter(param, c)
+
+func _cornea_set(param: String) -> Callable:
+	return func(v: float) -> void:
+		for m in cornea_mats:
+			m.set_shader_parameter(param, v)
+
 
 func _skin_setter(param: String) -> Callable:
 	return func(v: float) -> void:
