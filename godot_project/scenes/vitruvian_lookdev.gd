@@ -204,12 +204,10 @@ func _ready() -> void:
 	if not _load_and_wire():
 		push_error("[vit] failed to load/wire head")
 		return
-	# Godot 4.6.3 does NOT render native blend-shape deformation on this imported
-	# glTF morph mesh (set_blend_shape_value is silently a no-op visually). Capture
-	# the per-shape vertex deltas and drive the face by REBUILDING the surface on the
-	# CPU each time the weights change (_apply_morph). This is the only path that
-	# actually moves the mouth/brows on screen.
-	_setup_face_morph()
+	# Drive the face with NATIVE blend shapes (set_blend_shape_value) — it deforms ALL
+	# surfaces (skin + the VitMouth teeth/tongue interior). The old CPU-rebuild path
+	# (_setup_face_morph/_apply_morph) only rebuilt surface 0, so it could not move the
+	# mouth interior; left in the file as dead code for reference.
 	_build_ui()
 	_update_orbit_camera()
 	if OS.has_environment("FACE_FORCE"):
@@ -672,14 +670,17 @@ func _find_class(node: Node, cls: String) -> Node:
 
 
 # ── animation + facial control ───────────────────────────────────────────────
+# real Vitruvian FACS morphs (morphs/L3) — Mouth_Large_Opened moves the jaw + the
+# lower teeth/tongue (surface 1) for a true open mouth; Happy/Sad/Angry are FACS emotions.
 const FACE_POSES: Dictionary = {
 	"neutral": {},
-	"smile": {"mouthSmileLeft": 1.0, "mouthSmileRight": 1.0, "cheekSquintLeft": 0.5, "cheekSquintRight": 0.5},
-	"surprise": {"jawOpen": 0.58, "browInnerUp": 1.0, "browOuterUpLeft": 0.85, "browOuterUpRight": 0.85, "eyeWideLeft": 1.0, "eyeWideRight": 1.0},
-	"jawopen": {"jawOpen": 1.0},
-	"talk": {"jawOpen": 0.45, "mouthFunnel": 0.3},
-	"frown": {"mouthFrownLeft": 0.95, "mouthFrownRight": 0.95, "browDownLeft": 0.85, "browDownRight": 0.85, "mouthLowerDownLeft": 0.35, "mouthLowerDownRight": 0.35},
-	"blink": {},   # eyes blink via the lid geometry (blink_amt), not a morph
+	"smile": {"Happy": 0.85},
+	"surprise": {"Mouth_Large_Opened": 0.5, "Eyebrows_Raised_Left": 1.0, "Eyebrows_Raised_Right": 1.0, "Eyes_Opened_Max_Left": 0.9, "Eyes_Opened_Max_Right": 0.9},
+	"jawopen": {"Mouth_Large_Opened": 1.0},
+	"talk": {"Mouth_Large_Opened": 0.4, "Lips_Up_Funnel": 0.3},
+	"frown": {"Sad": 0.9},
+	"angry": {"Angry": 1.0},
+	"blink": {"Eyes_Closed_Max": 1.0},
 }
 
 
@@ -709,32 +710,26 @@ func _refresh_btn_tint(dict: Dictionary, active: String) -> void:
 func _drive_face(delta: float) -> void:
 	if face_mi == null or _face_mode == "__raw__":
 		return
-	# build this frame's morph weight set, then rebuild the surface via _apply_morph
-	# (native set_blend_shape_value does not render on this mesh in Godot 4.6.3).
-	var weights: Dictionary = {}
+	# NATIVE blend shapes (set_blend_shape_value) — deforms BOTH surfaces (skin + the
+	# VitMouth interior), so the FACS jaw morphs move the lower teeth/tongue too.
+	for n in bshapes:
+		face_mi.set_blend_shape_value(bshapes[n], 0.0)   # clear, then set this frame's pose
 	var saccade: bool = true
 	var blink_amt: float = 0.0
 	if _face_mode == "auto":
-		var bt: float = fmod(_time + 0.6, 3.0)
-		blink_amt = sin(bt / 0.18 * PI) if bt < 0.18 else 0.0   # a blink every 3s
-		weights["mouthSmileLeft"] = 0.32; weights["mouthSmileRight"] = 0.32
-		# a slow breathing micro-expression so the resting face isn't frozen
-		var em: float = 0.5 + 0.5 * sin(_time * 0.6)
-		weights["browInnerUp"] = 0.10 * em
+		var bt: float = fmod(_time + 0.6, 3.2)
+		blink_amt = sin(bt / 0.16 * PI) if bt < 0.16 else 0.0   # a blink every ~3s (Eyes_Closed_Max)
+		_sshape("Happy", 0.30)                                  # gentle resting smile
+		_sshape("Eyes_Closed_Max", clampf(blink_amt, 0.0, 1.0))
+		if blink_amt > 0.4: saccade = false
 	else:
 		var pose: Dictionary = FACE_POSES.get(_face_mode, {})
 		for k in pose:
-			weights[k] = pose[k]
+			_sshape(k, pose[k])
 		if _face_mode == "blink":
 			blink_amt = 1.0
 			saccade = false
-	_apply_morph(weights)
-	# blink: sweep the upper eyelid DOWN over the eye (real geometry, not a weak morph)
-	if upper_lids.size() > 0:
-		var ang: float = blink_amt * deg_to_rad(60.0)
-		for l in upper_lids:
-			(l["node"] as MeshInstance3D).transform.basis = Basis(Vector3(1, 0, 0), -ang) * (l["rest_basis"] as Basis)
-	# eye saccades (don't dart while the eye is shut)
+	# eye saccades (procedural eyeballs; don't dart while the eye is shut)
 	if saccade and blink_amt < 0.4 and eye_nodes.size() > 0:
 		var k: int = int(_time / 2.0)
 		var target: Vector2 = Vector2(sin(float(k) * 12.9898) * 0.22, sin(float(k) * 4.1413) * 0.13)
@@ -1233,7 +1228,7 @@ func _build_ui() -> void:
 	var expr_grid: GridContainer = GridContainer.new()
 	expr_grid.columns = 3
 	vb.add_child(expr_grid)
-	for ex in ["auto", "neutral", "smile", "surprise", "frown", "blink"]:
+	for ex in ["auto", "neutral", "smile", "jawopen", "talk", "surprise", "frown", "angry", "blink"]:
 		var eb: Button = Button.new()
 		eb.text = ex
 		eb.disabled = bshapes.is_empty()

@@ -28,210 +28,68 @@ try:
     uvs=obj.data.uv_layers; udim="VitruvianUV_UDIM"; uvs.active=uvs[udim]
     for uv in uvs: uv.active_render=(uv.name==udim)
     me=obj.data
+    ORIG_NV=len(me.vertices)                 # FACS morph deltas index into THIS topology
     me.materials.clear()
-    for nm in ("VitSkin","VitMouth","VitScalp","VitDelete"): me.materials.append(bpy.data.materials.new(nm))
-    SKIN,MOUTH,SCALP,DEL=0,1,2,3
+    # surface 0 = VitSkin (face+lips), surface 1 = VitMouth (tile 1006 interior: cavity,
+    # gums, TONGUE, TEETH — textured by vit_mouth.png). Keeping the mouth interior in the
+    # SAME mesh (just a 2nd material/surface) means the FACS jaw morphs move the lower
+    # teeth+tongue WITH the jaw (a real open mouth), not a static cavity.
+    for nm in ("VitSkin","VitMouth","VitDelete"): me.materials.append(bpy.data.materials.new(nm))
+    SKIN,MOUTH,DEL=0,1,2
     uvl=me.uv_layers[udim].data
     for poly in me.polygons:
         u,v=uvl[poly.loop_indices[0]].uv
         tile=1001+int(math.floor(u))+10*int(math.floor(v))
-        if tile==1001: poly.material_index=SKIN
-        elif tile==1006: poly.material_index=MOUTH
-        elif tile in (1005,1007): poly.material_index=DEL
+        if tile==1006: poly.material_index=MOUTH
+        elif tile in (1005,1007): poly.material_index=DEL   # eyes/lashes (procedural replacements)
         else: poly.material_index=SKIN
-    bm=bmesh.new(); bm.from_mesh(me); bm.faces.ensure_lookup_table()
+    bm=bmesh.new(); bm.from_mesh(me)
+    oidx=bm.verts.layers.int.new("oidx")     # remember each vert's ORIGINAL index → FACS delta lookup
+    bm.verts.ensure_lookup_table()
+    for i,v in enumerate(bm.verts): v[oidx]=i
+    bm.faces.ensure_lookup_table()
     bmesh.ops.delete(bm,geom=[f for f in bm.faces if f.material_index==DEL],context='FACES')
     bm.verts.ensure_lookup_table()
     bmesh.ops.delete(bm,geom=[v for v in bm.verts if not v.link_faces],context='VERTS')
     bm.verts.ensure_lookup_table()
     bmesh.ops.delete(bm,geom=[v for v in bm.verts if v.co.z<NECK_CUT_Z],context='VERTS')
     bm.faces.ensure_lookup_table(); bm.normal_update()
-
-    # --- MOUTH INTERIOR (UV tile 1006) — the base mesh ships a real mouth bag: cavity,
-    # gums, TONGUE and TEETH, textured by vit_mouth.png, all sitting BEHIND the lips
-    # (verified invisible head-on). The LIPS themselves are skin (tile 1001) and morph.
-    # Split the interior into its OWN object (copying the UDIM UVs so the teeth texture
-    # maps) so it stays a dark, real mouth. jawOpen then drops the lower lip and reveals
-    # the teeth/cavity = a genuine open mouth, not skin-on-skin. (Earlier this interior
-    # was wrongly MERGED into the skin → an open mouth looked skin-coloured.) ---
-    src_uv = bm.loops.layers.uv.get(udim)
-    mface = [f for f in bm.faces if f.material_index == MOUTH]
-    mbm = bmesh.new(); muv = mbm.loops.layers.uv.new(udim); vmap = {}
-    for f in mface:
-        nv = []
-        for v in f.verts:
-            if v not in vmap: vmap[v] = mbm.verts.new(v.co)
-            nv.append(vmap[v])
-        try:
-            nf = mbm.faces.new(nv)
-            for lsrc, ldst in zip(f.loops, nf.loops):
-                ldst[muv].uv = lsrc[src_uv].uv
-        except ValueError:
-            pass
-    mbm.normal_update()
-    mouth_me = bpy.data.meshes.new("VitMouthMesh"); mouth_me.materials.append(bpy.data.materials.new("VitMouth"))
-    mbm.to_mesh(mouth_me); mbm.free()
-    mouth_obj = bpy.data.objects.new("VitMouth", mouth_me)
-    bpy.context.scene.collection.objects.link(mouth_obj)
-    log("mouth interior split: verts", len(mouth_me.vertices), "faces", len(mouth_me.polygons))
-
-    # remove the interior faces from the SKIN (leaves the lip-rimmed opening); scalp merges to skin
-    bmesh.ops.delete(bm, geom=[f for f in bm.faces if f.material_index in (MOUTH, SCALP)], context='FACES')
-    bm.verts.ensure_lookup_table()
-    bmesh.ops.delete(bm, geom=[v for v in bm.verts if not v.link_faces], context='VERTS')
     bm.to_mesh(me); bm.free(); me.update()
-    scalp_obj = None
-    log("head(skin) verts", len(me.vertices))
+    scalp_obj=None; mouth_obj=None           # mouth is now surface 1, not a separate object
+    # map new vert index -> original cm_vitruvian index (for FACS delta lookup)
+    oattr=me.attributes["oidx"].data
+    new_to_orig=[int(oattr[i].value) for i in range(len(me.vertices))]
+    nsurf=len({p.material_index for p in me.polygons})
+    log("head verts",len(me.vertices),"surfaces",nsurf,"(0=VitSkin,1=VitMouth)")
 
-    # single VitSkin surface (morphs render on a single surface; lips live here)
-    me.materials.clear(); me.materials.append(bpy.data.materials.new("VitSkin"))
-    for p in me.polygons: p.material_index = 0
-    me.update()
-    log("morph mesh: SINGLE surface (skin+lips; mouth interior is a separate dark mesh)")
-
-    # LIP verts (skin verts ringing the mouth opening) drive smile/frown/funnel + set the
-    # lip-line for jawOpen. Identify geometrically since tile 1006 is no longer in the skin.
-    co0 = np.array([me.vertices[i].co for i in range(len(me.vertices))])
-    mouth_vidx = set(int(i) for i in range(len(me.vertices))
-                     if abs(co0[i][0]) < 0.046 and co0[i][1] < -0.026 and 1.543 < co0[i][2] < 1.598)
-    log("lip verts (skin):", len(mouth_vidx))
-
-    # =============== shape keys ===============
-    obj.shape_key_add(name="Basis",from_mix=False)
+    # =============== shape keys = REAL Vitruvian FACS morphs ===============
+    # The project ships a FACS rig: morphs/L3/*.npz are idx+delta on THIS exact topology.
+    # Use those artist-authored shapes instead of hand-sculpted ones. Jaw_Lower /
+    # Mouth_Large_Opened move the jaw AND the lower teeth+tongue (surface 1 = VitMouth)
+    # for a real open mouth; Happy/Sad/Angry/.. are ready FACS emotions; aa/ow/p_b_m/..
+    # are speech visemes. Deltas are looked up via new_to_orig (original cm_vitruvian idx).
+    L3=r"C:/Users/Sam/AppData/Roaming/Blender Foundation/Blender/4.5/scripts/addons/CharMorph/data/characters/Vitruvian/morphs/L3"
+    FACS=["Jaw_Lower","Mouth_Large_Opened","Lips_Up_Funnel",
+          "Lips_Up_Corner_Wide_Left","Lips_Up_Corner_Wide_Right",
+          "Happy","Sad","Angry","Scared","Disgusted","Thinking","Kiss","Smile_Lips_Closed",
+          "Eyebrows_Raised_Left","Eyebrows_Raised_Right","Eyebrows_Frown_Left","Eyebrows_Frown_Right",
+          "Eyes_Closed_Max","Eyes_Opened_Max_Left","Eyes_Opened_Max_Right","Eyes_Squint",
+          "aa_02","ow_08","p_b_m_21","f_v_18","ey_eh_uh_04"]
     nv=len(me.vertices)
     base=np.array([me.vertices[i].co for i in range(nv)])
-    def ss(e0,e1,x):
-        t=max(0.0,min(1.0,(x-e0)/(e1-e0) if e1!=e0 else 0.0)); return t*t*(3-2*t)
-    def add_key(name,off):
-        kb=obj.shape_key_add(name=name,from_mix=False)
-        nz=0
+    obj.shape_key_add(name="Basis",from_mix=False)
+    def add_facs(name):
+        fp=os.path.join(L3,name+".npz")
+        if not os.path.exists(fp): log("MISSING",name); return 0
+        z=np.load(fp,allow_pickle=True)
+        full=np.zeros((ORIG_NV,3)); full[z["idx"].astype(int)]=z["delta"].astype(float)
+        kb=obj.shape_key_add(name=name,from_mix=False); nz=0
         for i in range(nv):
-            o=off[i]
+            o=full[new_to_orig[i]]
             if o[0] or o[1] or o[2]:
                 kb.data[i].co=Vector(base[i])+Vector(o); nz+=1
         return nz
-    def zeros(): return np.zeros((nv,3))
-
-    # mouth geometry first (needed by jawOpen so it can hinge at the lip line)
-    mc=base[sorted(mouth_vidx)] if mouth_vidx else base
-    cornerL=np.array([mc[:,0].min(),mc[:,1].mean(),mc[:,2].mean()])  # char-left = -X
-    cornerR=np.array([mc[:,0].max(),mc[:,1].mean(),mc[:,2].mean()])
-    mcz=mc[:,2].mean()        # the lip-line height
-    log("mouth line z (mcz)=",round(float(mcz),4)," mouth verts=",len(mouth_vidx))
-
-    # jawOpen: hinge the lower jaw at the mandible joint (back, near ear height) and
-    # ramp the weight in BELOW the lip line. The lower lip + chin + jaw swing DOWN and
-    # BACK while the upper lip / nose stay put => the lips actually PART (a real opening)
-    # instead of the whole chin just getting longer. Then the inner-lip rim is recessed
-    # so the gap self-shadows and reads as a dark mouth, not skin-on-skin.
-    JPY,JPZ=0.055,1.602; A=math.radians(34.0)          # jaw pivot (behind, ear height)
-    off=zeros()
-    for i in range(nv):
-        z=base[i][2]
-        w=ss(mcz+0.006, mcz-0.014, z)                  # 0 above lip line, 1 below it
-        if w<=0: continue
-        dy=base[i][1]-JPY; dz=base[i][2]-JPZ; a=A*w
-        ca,sa=math.cos(a),math.sin(a)
-        off[i]=[0.0,(JPY+ca*dy-sa*dz)-base[i][1],(JPZ+sa*dy+ca*dz)-base[i][2]]
-    # small inner-lip recess so the lower lip tucks slightly BEHIND nothing-but-air and
-    # doesn't clip forward of the teeth mesh as it drops (the dark VitMouth supplies the
-    # actual cavity now, so this is just anti-clip, not the shadow trick).
-    for vi in sorted(mouth_vidx):
-        dzc=abs(base[vi][2]-mcz)
-        if dzc<0.010:
-            rw=1.0-dzc/0.010
-            off[vi][1]+=0.005*rw                       # +Y = backward into the head
-    log("jawOpen",add_key("jawOpen",off))
-    def corner_shape(corner, dx, dy, dz, rad, only_below=False, only_mouth=True):
-        off=zeros()
-        idxs=sorted(mouth_vidx) if only_mouth else range(nv)
-        for vi in idxs:
-            if only_below and base[vi][2]>mcz: continue
-            d=np.linalg.norm(base[vi]-corner)
-            w=max(0.0,1.0-d/rad)
-            if w>0: off[vi]=[dx*w,dy*w,dz*w]
-        return off
-    # stronger so a closed-mouth smile/frown reads clearly (corner up&out / down&in)
-    log("mouthSmileLeft",  add_key("mouthSmileLeft",  corner_shape(cornerL,-0.015,0.010,0.032,0.058)))
-    log("mouthSmileRight", add_key("mouthSmileRight", corner_shape(cornerR, 0.015,0.010,0.032,0.058)))
-    log("mouthFrownLeft",  add_key("mouthFrownLeft",  corner_shape(cornerL,-0.008,0.002,-0.028,0.054)))
-    log("mouthFrownRight", add_key("mouthFrownRight", corner_shape(cornerR, 0.008,0.002,-0.028,0.054)))
-    log("mouthLowerDownLeft",  add_key("mouthLowerDownLeft",  corner_shape(np.array([-0.012,mc[:,1].mean(),mcz]),0,0,-0.013,0.030,only_below=True)))
-    log("mouthLowerDownRight", add_key("mouthLowerDownRight", corner_shape(np.array([ 0.012,mc[:,1].mean(),mcz]),0,0,-0.013,0.030,only_below=True)))
-    # mouthFunnel: lips forward + narrow
-    off=zeros()
-    for vi in sorted(mouth_vidx):
-        d=np.linalg.norm(base[vi]-np.array([0,mc[:,1].mean(),mcz]))
-        w=max(0.0,1.0-d/0.030)
-        if w>0: off[vi]=[(-base[vi][0]*0.25)*w,-0.006*w,0.0]
-    log("mouthFunnel",add_key("mouthFunnel",off))
-
-    # brows
-    def brow_verts():
-        out=[]
-        for i in range(nv):
-            x,y,z=base[i]
-            if y<-0.015 and 1.652<z<1.705: out.append(i)
-        return out
-    bverts=brow_verts()
-    def brow_shape(xmin,xmax,dz):
-        off=zeros()
-        for i in bverts:
-            x,y,z=base[i]
-            if xmin<=abs(x)<=xmax:
-                w=ss(1.652,1.668,z)*ss(1.705,1.668,z)
-                off[i]=[0,0,dz*w]
-        return off
-    log("browInnerUp",     add_key("browInnerUp",     brow_shape(0.0,0.030, 0.030)))
-    log("browOuterUpLeft", add_key("browOuterUpLeft",  brow_shape(0.030,0.065,0.020) if True else zeros()))
-    # split outer up by side
-    def brow_side(side, dz):
-        off=zeros()
-        for i in bverts:
-            x,y,z=base[i]
-            if (x<0)==(side=="L") and 0.028<abs(x)<0.066:
-                w=ss(1.652,1.668,z)*ss(1.705,1.668,z); off[i]=[0,0,dz*w]
-        return off
-    log("browOuterUpLeft",  add_key("browOuterUpLeft", brow_side("L",0.024)))
-    log("browOuterUpRight", add_key("browOuterUpRight",brow_side("R",0.024)))
-    def brow_down_side(side):
-        off=zeros()
-        for i in bverts:
-            x,y,z=base[i]
-            if (x<0)==(side=="L"):
-                w=ss(1.652,1.666,z); off[i]=[(0.002 if side=="L" else -0.002)*w,0,-0.011*w]
-        return off
-    log("browDownLeft",  add_key("browDownLeft", brow_down_side("L")))
-    log("browDownRight", add_key("browDownRight",brow_down_side("R")))
-
-    # cheeks + eyes (per socket)
-    def eye_region(center, rad=0.019):
-        return [i for i in range(nv) if (Vector(base[i])-center).length<rad]
-    for side,C in (("Left",SOCK["L"]),("Right",SOCK["R"])):
-        reg=eye_region(C)
-        # eyeBlink: upper-lid verts down to just below center + forward
-        offB=zeros(); offW=zeros()
-        MIDZ=C.z-0.002                            # where the closed lids meet
-        for i in reg:
-            x,y,z=base[i]
-            if z>C.z-0.001:                        # upper lid → sweep down across the eye
-                w=ss(C.z-0.001,C.z+0.013,z)
-                offB[i]=[0,-0.004*w,(MIDZ-z)*w]
-                offW[i]=[0,0,0.005*w]              # eyeWide = lift upper lid
-            elif z<C.z-0.002:                      # lower lid → rise to meet
-                w=ss(C.z-0.002,C.z-0.013,z)
-                offB[i]=[0,-0.003*w,(MIDZ-z)*0.6*w]
-        log("eyeBlink"+side,add_key("eyeBlink"+side,offB))
-        log("eyeWide"+side, add_key("eyeWide"+side, offW))
-        # cheekSquint: cheek below eye lifts toward eye
-        offC=zeros()
-        for i in range(nv):
-            x,y,z=base[i]
-            if y<-0.02 and 1.585<z<1.625 and (0.025<abs(x)<0.070) and ((x<0)==(side=="Left")):
-                w=ss(1.585,1.610,z)*ss(1.625,1.610,z)
-                offC[i]=[0,0,0.006*w]
-        log("cheekSquint"+side,add_key("cheekSquint"+side,offC))
-
+    for nm in FACS: log("FACS",nm,add_facs(nm))
     log("TOTAL shape keys:",len(obj.data.shape_keys.key_blocks))
 
     # =============== eyeballs + lashes (verbatim from head export) ===============
@@ -351,11 +209,11 @@ try:
                 if n in kb: kb[n].value=val
         EXPR={
             "neutral":{},
-            "blink":{"eyeBlinkLeft":1,"eyeBlinkRight":1},
-            "jawOpen":{"jawOpen":1},
-            "smile":{"mouthSmileLeft":1,"mouthSmileRight":1,"cheekSquintLeft":0.5,"cheekSquintRight":0.5},
-            "surprise":{"jawOpen":0.6,"browInnerUp":1,"browOuterUpLeft":0.8,"browOuterUpRight":0.8,"eyeWideLeft":1,"eyeWideRight":1},
-            "frown":{"mouthFrownLeft":0.9,"mouthFrownRight":0.9,"browDownLeft":0.8,"browDownRight":0.8,"mouthLowerDownLeft":0.3,"mouthLowerDownRight":0.3},
+            "blink":{"Eyes_Closed_Max":1},
+            "jawOpen":{"Mouth_Large_Opened":1},
+            "happy":{"Happy":1},
+            "surprise":{"Mouth_Large_Opened":0.5,"Eyebrows_Raised_Left":1,"Eyebrows_Raised_Right":1,"Eyes_Opened_Max_Left":0.9,"Eyes_Opened_Max_Right":0.9},
+            "sad":{"Sad":1},
         }
         for nm,d in EXPR.items():
             setk(d); scn.render.filepath=os.path.join(RENDIR,f"expr_{nm}.png"); bpy.ops.render.render(write_still=True); log("rendered",nm)

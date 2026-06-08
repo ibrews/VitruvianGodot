@@ -273,7 +273,7 @@ func _load_head_and_hair() -> void:
 		if mi.name.begins_with("LidUp"):
 			upper_lids.append({"node": mi, "rest_basis": mi.transform.basis})
 	print("[cine] face blendshapes=", bshapes.size(), " eye_nodes=", eye_nodes.size())
-	_setup_face_morph()
+	# NATIVE blend shapes drive the face (deforms skin + VitMouth interior). No mesh swap.
 
 	# HAIR — dynamic SPRING-BONE chain (rides the head via head_rig; HR1..n simulate)
 	var hairscene: PackedScene = load(HAIR_RIGGED)
@@ -441,33 +441,30 @@ func _drive_face(t: float, delta: float) -> void:
 		return
 	var tt: float = t if _movie else fmod(t, DUR)
 
-	# ── blink: a quick lid close every ~3s (real upper-lid geometry sweeps down) ──
-	var bt: float = fmod(tt + 0.6, 3.0)
-	var blink: float = 0.0
-	if bt < 0.18:
-		blink = sin(bt / 0.18 * PI)
-	var lid_ang: float = blink * deg_to_rad(60.0)
-	for l in upper_lids:
-		(l["node"] as MeshInstance3D).transform.basis = Basis(Vector3(1, 0, 0), -lid_ang) * (l["rest_basis"] as Basis)
+	# NATIVE Vitruvian FACS morphs (deform skin + the VitMouth teeth/tongue interior).
+	for n in bshapes:
+		face_mi.set_blend_shape_value(bshapes[n], 0.0)
 
-	# ── expression arc (additive weights → _apply_morph) ──
+	# ── blink every ~3s via the real Eyes_Closed_Max FACS shape ──
+	var bt: float = fmod(tt + 0.6, 3.0)
+	var blink: float = (sin(bt / 0.16 * PI) if bt < 0.16 else 0.0)
+	_sshape("Eyes_Closed_Max", clampf(blink, 0.0, 1.0))
+
+	# ── expression arc ──
 	var closeup: float = smoothstep(26.5, 28.5, tt)
-	var browflash: float = smoothstep(17.6, 18.4, tt) * (1.0 - smoothstep(19.6, 21.0, tt)) * 0.45
-	# a silent "hello" — TWO clear mouth-opens in the tight close-up so the (now real,
-	# teeth-and-all) jaw articulation reads unmistakably on camera.
+	# a silent "hello" — TWO clear mouth-opens (Mouth_Large_Opened = real jaw + teeth +
+	# tongue) in the tight close-up so the working articulation reads unmistakably.
 	var speak: float = 0.0
 	if tt > 28.6 and tt < 30.9:
-		speak = maxf(0.0, sin((tt - 28.6) / 2.3 * PI * 4.0)) * 0.85
-	# warm close-up smile, but let the jaw-open take over while "speaking" (a smile +
-	# wide jaw at once reads as a distorted grin and detaches the static lower teeth).
-	var smile: float = (0.10 + 0.5 * closeup) * (1.0 - clampf(speak * 2.2, 0.0, 0.85))
-	var w: Dictionary = {
-		"mouthSmileLeft": smile, "mouthSmileRight": smile,
-		"browInnerUp": browflash + smile * 0.12,
-		"browOuterUpLeft": browflash * 0.6, "browOuterUpRight": browflash * 0.6,
-		"jawOpen": speak, "mouthFunnel": speak * 0.25,
-	}
-	_apply_morph(w)
+		speak = maxf(0.0, sin((tt - 28.6) / 2.3 * PI * 4.0)) * 0.62
+	# warm Happy smile, suppressed while "speaking" so the open mouth reads cleanly
+	var smile: float = (0.12 + 0.55 * closeup) * (1.0 - clampf(speak * 2.2, 0.0, 0.9))
+	_sshape("Happy", smile)
+	_sshape("Mouth_Large_Opened", speak)
+	# a brief brow raise mid-turn for life
+	var browflash: float = smoothstep(17.6, 18.4, tt) * (1.0 - smoothstep(19.6, 21.0, tt)) * 0.7
+	_sshape("Eyebrows_Raised_Left", browflash)
+	_sshape("Eyebrows_Raised_Right", browflash)
 
 	# ── eye saccades: snap to a new gaze target every ~2s, hold; freeze while blinking ──
 	if blink < 0.4:
