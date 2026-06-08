@@ -18,7 +18,10 @@ def log(*a):
     s=" ".join(str(x) for x in a); print("HEAD:",s); _l.append(s)
 def flush():
     os.makedirs(os.path.dirname(LOG),exist_ok=True); open(LOG,"w",encoding="utf-8").write("\n".join(_l))
-NECK_CUT_Z=1.49
+NECK_CUT_Z=1.475  # the body's neck skin is trimmed away under the shirt, so the HEAD provides
+                  # the neck. Cut it just under the shirt-collar rim (collar top = 1.486) so the
+                  # head's neck fills down INTO the collar and its cut edge tucks under the collar
+                  # band — not draped over the shirt (1.40) and not leaving a gap above it (1.50).
 SOCK={"L":Vector((-0.0335,-0.0531,1.6344)),"R":Vector((0.0335,-0.0531,1.6344))}
 EYE_R=0.0120; EYE_RECESS=0.0050; IRIS_FWD=Vector((0.0,-1.0,0.0))   # slightly smaller + deeper so the eyeball edge stops clipping through the lid skin
 try:
@@ -52,7 +55,15 @@ try:
     bm.verts.ensure_lookup_table()
     bmesh.ops.delete(bm,geom=[v for v in bm.verts if not v.link_faces],context='VERTS')
     bm.verts.ensure_lookup_table()
-    bmesh.ops.delete(bm,geom=[v for v in bm.verts if v.co.z<NECK_CUT_Z],context='VERTS')
+    # COLLAR-FOLLOWING neck cut: a crew-neck dips lower at the FRONT (-Y) than the BACK
+    # (+Y), so a flat z-cut either gaps at the front or drapes over the back. Cut along a
+    # sloped line — lower in front, higher in back — so the head's neck fills the collar
+    # opening all the way round and the cut edge tucks under the shirt. (Shirt collar top
+    # z≈1.486 at back, dips to ≈1.43 at front.)
+    def neck_floor(y):
+        t=max(0.0,min(1.0,(y+0.045)/0.090))   # 0 at front (y=-0.045) → 1 at back (y=+0.045)
+        return 1.425+(1.487-1.425)*t
+    bmesh.ops.delete(bm,geom=[v for v in bm.verts if v.co.z<neck_floor(v.co.y)],context='VERTS')
     bm.faces.ensure_lookup_table(); bm.normal_update()
     bm.to_mesh(me); bm.free(); me.update()
     scalp_obj=None; mouth_obj=None           # mouth is now surface 1, not a separate object
@@ -197,6 +208,66 @@ try:
             eye_objs.append(build_lid(c, EYE_R, "LidUp_%s"%side_name, upper=True))
             eye_objs.append(build_lid(c, EYE_R, "LidLo_%s"%side_name, upper=False))
         log("added eyelids")
+
+    # ---- EYESHADOW patch: a thin shell floating just over the UPPER-LID skin (elevation
+    # above the lash line up toward the crease). Godot gives it a tinted, mostly-transparent
+    # material driven by a look-dev slider (opacity 0 = none). Sits a touch proud of the
+    # skin so it reads as makeup on the lid. ----
+    shadow_mat = bpy.data.materials.new("VitEyeshadow")
+    def build_eyeshadow(center, R, name):
+        bm=bmesh.new(); uvl=bm.loops.layers.uv.new("UVMap")
+        fwd=Vector((0,-1,0)); up=Vector((0,0,1)); right=Vector((1,0,0))
+        Rsh=R*1.42                                   # float outside the lid skin
+        el0,el1=math.radians(10),math.radians(74); azmax=math.radians(62)
+        NAZ,NEL=14,5; vd={}
+        for ie in range(NEL+1):
+            el=el0+(el1-el0)*ie/NEL
+            for ia in range(NAZ+1):
+                az=-azmax+2*azmax*ia/NAZ
+                faz=(math.sin(az)*right+math.cos(az)*fwd)
+                d=(faz*math.cos(el)+up*math.sin(el)).normalized()
+                v=bm.verts.new(center+d*Rsh); vd[(ia,ie)]=v
+        for ie in range(NEL):
+            for ia in range(NAZ):
+                f=bm.faces.new((vd[(ia,ie)],vd[(ia+1,ie)],vd[(ia+1,ie+1)],vd[(ia,ie+1)]))
+                # V across elevation: 1 at lash line (dense) -> 0 toward crease (fades)
+                for loop in f.loops:
+                    p=loop.vert.co
+                    loop[uvl].uv=(0.5,0.0)
+        m=bpy.data.meshes.new(name); bm.normal_update(); bm.to_mesh(m); bm.free()
+        m.materials.append(shadow_mat)
+        o=bpy.data.objects.new(name,m); bpy.context.scene.collection.objects.link(o)
+        return o
+    for side_name,center in SOCK.items():
+        eye_objs.append(build_eyeshadow(center+Vector((0.0,EYE_RECESS,0.0)),EYE_R,"Eyeshadow_%s"%side_name))
+    log("added eyeshadow patches")
+
+    # ---- NECK-BASE FILLER: the body's skin under the shirt was deleted (clothing
+    # poke-through fix), so the wider collar opening reveals dark gaps beside the neck.
+    # Plug them with a skin-coloured cone that flares from the neck radius down to the
+    # collar opening, sitting just inside the shirt — fills the collar so no black shows. ----
+    fill_mat = bpy.data.materials.new("VitSkin")   # skin shader in Godot (name-prefix match)
+    fbm = bmesh.new()
+    NSEG=24; cx,cy=0.0,-0.020
+    # stay INSIDE the collar opening (≈0.06 r) so the filler plugs the gap behind the
+    # collar without poking out as skin 'wings'. Oval (front-back longer) like a real neck.
+    rings=[(1.490,0.046),(1.470,0.052),(1.448,0.056)]  # SHORT band inside the collar (no chest wings)
+    ringv=[]
+    for (z,r) in rings:
+        row=[]
+        for k in range(NSEG):
+            a=2*math.pi*k/NSEG
+            row.append(fbm.verts.new(Vector((cx+math.cos(a)*r, cy+math.sin(a)*r*1.05, z))))
+        ringv.append(row)
+    for ri in range(len(rings)-1):
+        for k in range(NSEG):
+            k2=(k+1)%NSEG
+            fbm.faces.new((ringv[ri][k],ringv[ri][k2],ringv[ri+1][k2],ringv[ri+1][k]))
+    fme=bpy.data.meshes.new("VitNeckFillMesh"); fbm.normal_update(); fbm.to_mesh(fme); fbm.free()
+    fme.materials.append(fill_mat)
+    fill_obj=bpy.data.objects.new("VitNeckFill",fme); bpy.context.scene.collection.objects.link(fill_obj)
+    eye_objs.append(fill_obj)
+    log("added neck-base filler")
 
     if VERIFY:
         os.makedirs(RENDIR,exist_ok=True)

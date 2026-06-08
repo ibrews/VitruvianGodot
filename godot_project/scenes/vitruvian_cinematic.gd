@@ -261,7 +261,7 @@ func _load_head_and_hair() -> void:
 				"VitCornea":  mi.set_surface_override_material(si, _mat_cornea())
 				"VitMouth":   mi.set_surface_override_material(si, _mat_mouth())
 				"VitScalp":   mi.set_surface_override_material(si, _mat_discard())
-				"VitLash":    mi.set_surface_override_material(si, _mat_lash())
+				"VitEyeshadow": mi.set_surface_override_material(si, _mat_eyeshadow())
 				_: pass
 		# capture the face mesh (carries ARKit blend shapes) + eyeball spheres
 		if mi.mesh.get_blend_shape_count() > 0 and face_mi == null:
@@ -580,7 +580,7 @@ func _mat_eyeball() -> ShaderMaterial:
 	m.set_shader_parameter("iris_radius", 0.32)
 	m.set_shader_parameter("iris_margin", 0.018)
 	m.set_shader_parameter("pupil_radius", 0.10)
-	m.set_shader_parameter("eye_white", Color(0.86, 0.83, 0.80))
+	m.set_shader_parameter("eye_white", Color(0.80, 0.75, 0.69))   # warm off-white sclera (not pure white)
 	m.set_shader_parameter("pupil_color", Color(0.012, 0.010, 0.014))
 	m.set_shader_parameter("texture_iris_color", _iris_ramp())
 	m.set_shader_parameter("eye_cell_scale", 19.0)
@@ -602,6 +602,16 @@ func _mat_cornea() -> ShaderMaterial:
 	m.set_shader_parameter("spec_intensity", 0.5)
 	m.set_shader_parameter("alpha_max", 0.7)
 	return m
+
+func _mat_eyeshadow() -> StandardMaterial3D:
+	# a subtle touch of make-up on the cinematic character (soft tinted upper lid)
+	var m := StandardMaterial3D.new()
+	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	m.albedo_color = Color(0.32, 0.18, 0.27, 0.28)
+	m.roughness = 0.6
+	m.cull_mode = BaseMaterial3D.CULL_DISABLED
+	return m
+
 
 func _mat_mouth() -> StandardMaterial3D:
 	var m := StandardMaterial3D.new()

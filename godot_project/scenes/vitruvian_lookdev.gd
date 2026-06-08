@@ -210,6 +210,16 @@ func _ready() -> void:
 	# mouth interior; left in the file as dead code for reference.
 	_build_ui()
 	_update_orbit_camera()
+	if OS.has_environment("EYESHADOW_TEST"):   # force eyeshadow on for a capture
+		_eyeshadow_set_a().call(float(OS.get_environment("EYESHADOW_TEST")))
+	if OS.has_environment("NECK_SHOT"):        # hide hair + frame the neck/collar
+		if _ui_layer: _ui_layer.visible = false
+		if head_rig:
+			var hn: Node = head_rig.get_node_or_null("Hair")
+			if hn: (hn as Node3D).visible = false
+		var nyaw: float = float(OS.get_environment("NECK_SHOT")) if OS.get_environment("NECK_SHOT").is_valid_float() else 0.0
+		orbit_target = Vector3(0.0, 1.40, 0.0); orbit_dist = 0.46; orbit_yaw = nyaw; orbit_pitch = 6.0
+		_update_orbit_camera()
 	if OS.has_environment("FACE_FORCE"):
 		# inspection hook: hold an expression, hide hair/UI, frame the face
 		_set_face_mode(OS.get_environment("FACE_FORCE"))
@@ -506,7 +516,7 @@ func _load_and_wire() -> bool:
 				"VitCornea":  mi.set_surface_override_material(s, _make_cornea())
 				"VitMouth":   mi.set_surface_override_material(s, _make_mouth())
 				"VitScalp":   mi.set_surface_override_material(s, _make_scalp())
-				"VitLash":    mi.set_surface_override_material(s, _make_lash())
+				"VitEyeshadow": mi.set_surface_override_material(s, _make_eyeshadow())
 				_:            pass
 		# capture the face mesh (ARKit blend shapes) + eyeball spheres for the face driver
 		if mi.mesh.get_blend_shape_count() > 0 and face_mi == null:
@@ -863,7 +873,7 @@ func _make_eyeball() -> ShaderMaterial:
 	mat.set_shader_parameter("iris_radius", 0.32)
 	mat.set_shader_parameter("iris_margin", 0.018)
 	mat.set_shader_parameter("pupil_radius", 0.10)
-	mat.set_shader_parameter("eye_white", Color(0.86, 0.83, 0.80))
+	mat.set_shader_parameter("eye_white", Color(0.80, 0.75, 0.69))   # warm off-white sclera (not pure white)
 	mat.set_shader_parameter("pupil_color", Color(0.012, 0.010, 0.014))
 	mat.set_shader_parameter("texture_iris_color", _iris_ramp())
 	mat.set_shader_parameter("eye_cell_scale", 19.0)
@@ -1008,6 +1018,34 @@ func _make_lash() -> ShaderMaterial:
 	m.set_shader_parameter("tonal_variation", 0.15)
 	lash_mats.append(m)
 	return m
+
+
+# eyeshadow: a tinted, soft-edged shell over the upper lid. Opacity starts at 0 (no
+# make-up); the look-dev slider raises it. Transparent so it reads as colour on the skin.
+var eyeshadow_mats: Array[StandardMaterial3D] = []
+func _make_eyeshadow() -> StandardMaterial3D:
+	var m: StandardMaterial3D = StandardMaterial3D.new()
+	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	m.albedo_color = Color(0.30, 0.16, 0.26, 0.0)   # alpha 0 = off by default
+	m.roughness = 0.62
+	m.metallic = 0.0
+	m.cull_mode = BaseMaterial3D.CULL_DISABLED
+	m.no_depth_test = false
+	eyeshadow_mats.append(m)
+	return m
+
+
+func _eyeshadow_set_c() -> Callable:
+	return func(c: Color):
+		for m in eyeshadow_mats:
+			m.albedo_color = Color(c.r, c.g, c.b, m.albedo_color.a)
+
+
+func _eyeshadow_set_a() -> Callable:
+	return func(v: float):
+		for m in eyeshadow_mats:
+			var c: Color = m.albedo_color
+			m.albedo_color = Color(c.r, c.g, c.b, v)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -1349,14 +1387,10 @@ func _build_ui() -> void:
 	_mkcolor(vb, "brow_color", "eyebrow colour", Color("1f160e"), func(c): if vit_brow_mat: vit_brow_mat.set_shader_parameter("hair_color", c))
 	_mkslider(vb, "brow_threshold", "density", 0.02, 0.7, 0.005, 0.28, func(v): if vit_brow_mat: vit_brow_mat.set_shader_parameter("alpha_threshold", v))
 
-	# ── EYELASHES ──
-	_hdr(vb, "Eyelashes")
-	_mkcolor(vb, "lash_color", "colour", Color(0.022, 0.016, 0.013), _lash_set_c("hair_color"))
-	_mkslider(vb, "lash_threshold", "density", 0.02, 0.8, 0.005, 0.34, _lash_set("alpha_threshold"))
-	_mkslider(vb, "lash_root_dark", "root darkening", 0.0, 1.0, 0.01, 0.2, _lash_set("root_darkening"))
-	_mkslider(vb, "lash_rough", "roughness", 0.0, 1.0, 0.01, 0.5, _lash_set("roughness_val"))
-	_mkslider(vb, "lash_spec", "specular", 0.0, 1.0, 0.01, 0.14, _lash_set("specular_val"))
-	_mkslider(vb, "lash_aniso", "anisotropy", 0.0, 1.0, 0.01, 0.4, _lash_set("anisotropy"))
+	# ── EYE MAKE-UP (eyeshadow) ──
+	_hdr(vb, "Eye make-up")
+	_mkcolor(vb, "shadow_color", "eyeshadow colour", Color(0.30, 0.16, 0.26), _eyeshadow_set_c())
+	_mkslider(vb, "shadow_opacity", "eyeshadow amount", 0.0, 1.0, 0.01, 0.0, _eyeshadow_set_a())
 
 	# ── EYES (iris / pupil / sclera) ──
 	_hdr(vb, "Eyes — iris & pupil")

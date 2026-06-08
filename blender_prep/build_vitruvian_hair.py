@@ -18,6 +18,7 @@ OUT = r"H:/Work01/VitruvianGodot/godot_project"
 HAIRDIR = os.path.join(VDIR, "hairstyles")
 NCOLS = 4
 HEAD_C = Vector((0.0, -0.02, 1.66))
+FLOOR_Z = 1.44   # neck line — no hair card extends below this (keeps hair off the chest/body)
 
 
 def load_strands(npz, point_step):
@@ -148,6 +149,15 @@ def build_cards(strands, stride, w_root, w_tip, roll_max, name, wisp_ext=0.0):
             jitter = Vector((h(si * 3.1) - 0.5, h(si * 5.7) - 0.5, h(si * 7.3) - 0.5)) * seg * 0.4
             P.append(P[-1] + tip_dir * seg * (1.0 + wisp_ext) + jitter)
             P.append(P[-1] + tip_dir * seg * wisp_ext + jitter * 0.5)
+        # neck-line floor, VARIED per strand so the ends feather across ~1.41-1.49 instead
+        # of all bunching at one z (which clumps the dark tips into patches on the shoulders).
+        floor_z = FLOOR_Z + (h(si * 2.7) - 0.4) * 0.09
+        cut = None
+        for i in range(len(P)):
+            if P[i].z < floor_z:
+                cut = i; break
+        if cut is not None:
+            P = P[:cut]
         n = len(P)
         if n < 2:
             continue
@@ -203,16 +213,40 @@ bpy.ops.wm.read_factory_settings(use_empty=True)
 #     frames the face.
 # Both get crown volume + (Eve) children; the head-normal shader lights the whole
 # mass as a rounded volume so the crown reads as hair, not a smooth shell.
+# NECK-LENGTH bob: truncate every strand at the neck line so the hair ends around the
+# neck/jaw and never reaches the chest — the single-chain spring rig can't do true
+# per-card body collision, so short hair sidesteps the "falls into the body" problem.
+def clip_length(strands, z_floor):
+    # truncate each strand exactly at z_floor (interpolate the crossing point), so the
+    # ends sit right at the neck line regardless of the coarse Eve point sampling.
+    out = []
+    for st in strands:
+        keep = []
+        for p in st:
+            z = float(p[2])
+            if z < z_floor:
+                if keep:
+                    pa = np.array(keep[-1]); za = float(pa[2])
+                    if za > z_floor and za != z:
+                        t = (za - z_floor) / (za - z)
+                        keep.append(pa + (np.array(p) - pa) * t)
+                break
+            keep.append(np.array(p))
+        if len(keep) >= 2:
+            out.append(np.array(keep))
+    return out
+
 _hair_strands = clip_over_face(load_strands("Eve.npz", 2))
+_hair_strands = clip_length(_hair_strands, 1.46)        # neck-length bob (ends ~neck/jaw)
 _hair_strands = _hair_strands + crown_fill(_hair_strands, n_extra=1100)
-_hair_strands = make_children(_hair_strands, k=8, root_spread=0.0055, tip_spread=0.014)
+_hair_strands = make_children(_hair_strands, k=12, root_spread=0.0050, tip_spread=0.012)  # denser → less polygonal
 _hair_strands = add_crown_volume(_hair_strands, amount=0.010)
 print("[hair] total %d strands (Eve + crown_fill + children + volume)" % len(_hair_strands))
 # REGROOM: more, thinner, finer-tipped cards. Wisps applied ONLY to the long hanging
 # locks (build_cards gates on tip height) so the length tapers to fine wisps while the
 # crown stays a smooth capped dome — fuller silhouette, no spiky flyaways.
 hair = build_cards(_hair_strands, stride=1,
-                   w_root=0.0036, w_tip=0.0005, roll_max=0.85, name="VitHair", wisp_ext=0.35)
+                   w_root=0.0030, w_tip=0.0004, roll_max=0.95, name="VitHair", wisp_ext=0.30)
 brows = build_cards(load_strands("mind_eyebrows_11_Default.npz", 1), stride=4,
                     w_root=0.0016, w_tip=0.0006, roll_max=0.30, name="VitBrowCards")
 
