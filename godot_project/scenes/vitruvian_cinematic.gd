@@ -457,7 +457,7 @@ func _drive_face(t: float, delta: float) -> void:
 	# teeth-and-all) jaw articulation reads unmistakably on camera.
 	var speak: float = 0.0
 	if tt > 28.6 and tt < 30.9:
-		speak = maxf(0.0, sin((tt - 28.6) / 2.3 * PI * 4.0)) * 0.42
+		speak = maxf(0.0, sin((tt - 28.6) / 2.3 * PI * 4.0)) * 0.85
 	# warm close-up smile, but let the jaw-open take over while "speaking" (a smile +
 	# wide jaw at once reads as a distorted grin and detaches the static lower teeth).
 	var smile: float = (0.10 + 0.5 * closeup) * (1.0 - clampf(speak * 2.2, 0.0, 0.85))
