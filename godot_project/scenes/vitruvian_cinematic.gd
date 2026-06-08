@@ -35,6 +35,8 @@ var _dbg_done := false
 var camera: Camera3D
 var cam_attrs: CameraAttributesPractical
 var catch_light: OmniLight3D
+var key_light: DirectionalLight3D
+var rim_light: DirectionalLight3D
 var env: Environment
 
 # sequence timeline (seconds)
@@ -149,6 +151,7 @@ func _setup_lights() -> void:
 	key.light_angular_distance = 3.0
 	key.rotation_degrees = Vector3(-38, -68, 0)
 	add_child(key)
+	key_light = key
 
 	var rim := DirectionalLight3D.new()
 	rim.light_energy = 4.5
@@ -156,6 +159,7 @@ func _setup_lights() -> void:
 	rim.light_color = Color(0.42, 0.6, 1.0)
 	rim.rotation_degrees = Vector3(-12, 145, 0)
 	add_child(rim)
+	rim_light = rim
 
 	var fill := DirectionalLight3D.new()
 	fill.light_energy = 0.7
@@ -335,6 +339,20 @@ const SEGMENTS := [
 
 func _process(delta: float) -> void:
 	_t += delta
+	# fast close-up preview: drive face+camera at a fixed time (CINE_PREVIEW=<secs>),
+	# let the rig settle a moment, grab one frame, quit. (Body pose ≈ irrelevant for a
+	# face exposure / mouth check.)
+	if OS.has_environment("CINE_PREVIEW"):
+		var pt: float = float(OS.get_environment("CINE_PREVIEW"))
+		_drive_anim(_t)
+		if hair_spring: hair_spring.step(delta)
+		_drive_face(pt, delta)
+		_update_camera(pt)
+		if _t > 1.6:
+			var img: Image = get_viewport().get_texture().get_image()
+			img.save_png(ProjectSettings.globalize_path("res://").path_join("..").path_join("out").path_join("cine_preview.png"))
+			get_tree().quit()
+		return
 	_drive_anim(_t)
 	_drive_face(_t, delta)
 	if hair_spring: hair_spring.step(delta)
@@ -434,13 +452,15 @@ func _drive_face(t: float, delta: float) -> void:
 
 	# ── expression arc (additive weights → _apply_morph) ──
 	var closeup: float = smoothstep(26.5, 28.5, tt)
-	var smile: float = 0.10 + 0.55 * closeup                       # ambient + warm close-up smile
 	var browflash: float = smoothstep(17.6, 18.4, tt) * (1.0 - smoothstep(19.6, 21.0, tt)) * 0.45
-	# a silent "hello" — two soft mouth-opens near the end of the close-up so the
-	# (now genuinely working) jaw articulation is shown on camera.
+	# a silent "hello" — TWO clear mouth-opens in the tight close-up so the (now real,
+	# teeth-and-all) jaw articulation reads unmistakably on camera.
 	var speak: float = 0.0
-	if tt > 28.3 and tt < 30.6:
-		speak = maxf(0.0, sin((tt - 28.3) / 2.3 * PI * 2.0)) * 0.5
+	if tt > 28.6 and tt < 30.9:
+		speak = maxf(0.0, sin((tt - 28.6) / 2.3 * PI * 4.0)) * 0.42
+	# warm close-up smile, but let the jaw-open take over while "speaking" (a smile +
+	# wide jaw at once reads as a distorted grin and detaches the static lower teeth).
+	var smile: float = (0.10 + 0.5 * closeup) * (1.0 - clampf(speak * 2.2, 0.0, 0.85))
 	var w: Dictionary = {
 		"mouthSmileLeft": smile, "mouthSmileRight": smile,
 		"browInnerUp": browflash + smile * 0.12,
@@ -468,16 +488,28 @@ func _update_camera(t: float) -> void:
 	# otherwise occlude the face during 23-28s).
 	var closeness := smoothstep(26.5, 28.5, tt)
 	var orbit := deg_to_rad(-24.0 + 34.0 * sin(tt / DUR * TAU))
-	orbit = lerpf(orbit, deg_to_rad(-16.0), closeness)   # swing frontal in the close-up so the FACE (not hair) reads
-	var target_y := lerpf(0.98, 1.45, closeness)
-	var dist := lerpf(3.1, 1.5, closeness)
-	var fov := lerpf(40.0, 30.0, closeness)
+	orbit = lerpf(orbit, deg_to_rad(-9.0), closeness)    # near-frontal in the close-up so the FACE (eyes/mouth) reads
+	# TIGHT face close-up — fill the frame with the head so the (now working) blink,
+	# gaze, smile and the silent "hello" jaw-open are clearly visible, not a tiny head.
+	var target_y := lerpf(0.98, 1.60, closeness)
+	var dist := lerpf(3.1, 0.92, closeness)
+	var fov := lerpf(40.0, 26.0, closeness)
 	var tgt := Vector3(0, target_y, 0)
 	var p := deg_to_rad(4.0)
 	var dir := Vector3(sin(orbit) * cos(p), sin(p), cos(orbit) * cos(p))
 	camera.position = tgt + dir * dist
 	camera.look_at(tgt, Vector3.UP)
 	camera.fov = fov
+	# the tight face close-up otherwise blows out (key/rim + the near omni catch-light all
+	# pile onto a frame-filling face) — pull exposure + the hot lights down as we close in.
+	if env:
+		env.tonemap_exposure = lerpf(1.0, 0.70, closeness)
+	if catch_light:
+		catch_light.light_energy = lerpf(1.6, 0.45, closeness)
+	if key_light:
+		key_light.light_energy = lerpf(3.4, 2.1, closeness)
+	if rim_light:
+		rim_light.light_energy = lerpf(4.5, 2.4, closeness)
 	var focus := camera.global_position.distance_to(tgt)
 	cam_attrs.dof_blur_far_distance = focus + 0.15
 	cam_attrs.dof_blur_near_distance = maxf(0.05, focus - 0.35)
