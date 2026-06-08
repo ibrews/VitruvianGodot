@@ -135,7 +135,10 @@ def build_cards(strands, stride, w_root, w_tip, roll_max, name, wisp_ext=0.0):
     made = 0
     for si in range(0, len(strands), stride):
         P = [Vector(p) for p in strands[si]]
-        if len(P) >= 2 and wisp_ext > 0.0:
+        # only wisp the LONG hanging locks (tip well below the hairline); crown / short
+        # strands stay capped so the top doesn't sprout spiky flyaways.
+        long_lock = len(P) >= 2 and float(P[-1].z) < 1.58 and (P[-1] - P[0]).length > 0.12
+        if long_lock and wisp_ext > 0.0:
             # Extend the strand past its tip with a couple of fine flyaway points
             # (breaks the smooth helmet silhouette into wisps; these map to the
             # fine, mostly-transparent top of the atlas).
@@ -201,12 +204,15 @@ bpy.ops.wm.read_factory_settings(use_empty=True)
 # Both get crown volume + (Eve) children; the head-normal shader lights the whole
 # mass as a rounded volume so the crown reads as hair, not a smooth shell.
 _hair_strands = clip_over_face(load_strands("Eve.npz", 2))
-_hair_strands = _hair_strands + crown_fill(_hair_strands, n_extra=900)
-_hair_strands = make_children(_hair_strands, k=NCHILD, root_spread=0.006, tip_spread=0.013)
-_hair_strands = add_crown_volume(_hair_strands)
+_hair_strands = _hair_strands + crown_fill(_hair_strands, n_extra=1100)
+_hair_strands = make_children(_hair_strands, k=8, root_spread=0.0055, tip_spread=0.014)
+_hair_strands = add_crown_volume(_hair_strands, amount=0.010)
 print("[hair] total %d strands (Eve + crown_fill + children + volume)" % len(_hair_strands))
+# REGROOM: more, thinner, finer-tipped cards. Wisps applied ONLY to the long hanging
+# locks (build_cards gates on tip height) so the length tapers to fine wisps while the
+# crown stays a smooth capped dome — fuller silhouette, no spiky flyaways.
 hair = build_cards(_hair_strands, stride=1,
-                   w_root=0.0042, w_tip=0.0009, roll_max=0.7, name="VitHair", wisp_ext=0.25)
+                   w_root=0.0036, w_tip=0.0005, roll_max=0.85, name="VitHair", wisp_ext=0.35)
 brows = build_cards(load_strands("mind_eyebrows_11_Default.npz", 1), stride=4,
                     w_root=0.0016, w_tip=0.0006, roll_max=0.30, name="VitBrowCards")
 

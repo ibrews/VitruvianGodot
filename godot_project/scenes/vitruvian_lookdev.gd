@@ -537,6 +537,8 @@ func _load_and_wire() -> bool:
 
 	# ── HAIR — rigged spring-bone chain (physics), rides the head, collides with body ──
 	var hair_src: String = HAIR_RIGGED if ResourceLoader.exists(HAIR_RIGGED) else HAIR_GLB
+	if OS.has_environment("HAIR_RIGGED_OVERRIDE"):
+		hair_src = OS.get_environment("HAIR_RIGGED_OVERRIDE")
 	if ResourceLoader.exists(hair_src):
 		var hairscene: PackedScene = load(hair_src)
 		if hairscene:
