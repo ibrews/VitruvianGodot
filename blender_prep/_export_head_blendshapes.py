@@ -46,35 +46,55 @@ try:
     bm.verts.ensure_lookup_table()
     bmesh.ops.delete(bm,geom=[v for v in bm.verts if v.co.z<NECK_CUT_Z],context='VERTS')
     bm.faces.ensure_lookup_table(); bm.normal_update()
-    # (Scalp dup REMOVED: with single-surface/no-separation it merges to skin so it no
-    # longer darkens the crown, and its z>=1.625 region OVERLAPPED the eye sockets,
-    # offsetting skin forward over the eyeballs → eyes vanished. The hair backing
-    # handles the dark crown instead.)
-    bm.to_mesh(me); bm.free(); me.update()
-    log("head verts",len(me.vertices))
 
-    # Godot 4.6 does NOT render blend shapes on MULTI-surface meshes, AND
-    # bpy.ops.mesh.separate CORRUPTS the morph mesh for Godot's vertex pipeline
-    # (verts silently don't deform). So the morph mesh must be a SINGLE surface built
-    # WITHOUT any separation: merge mouth AND scalp into the skin material. The scalp
-    # ends up skin-coloured but it's under the hair (the hair backing handles the crown).
-    for p in me.polygons:
-        if p.material_index in (MOUTH, SCALP):
-            p.material_index = SKIN
+    # --- MOUTH INTERIOR (UV tile 1006) — the base mesh ships a real mouth bag: cavity,
+    # gums, TONGUE and TEETH, textured by vit_mouth.png, all sitting BEHIND the lips
+    # (verified invisible head-on). The LIPS themselves are skin (tile 1001) and morph.
+    # Split the interior into its OWN object (copying the UDIM UVs so the teeth texture
+    # maps) so it stays a dark, real mouth. jawOpen then drops the lower lip and reveals
+    # the teeth/cavity = a genuine open mouth, not skin-on-skin. (Earlier this interior
+    # was wrongly MERGED into the skin → an open mouth looked skin-coloured.) ---
+    src_uv = bm.loops.layers.uv.get(udim)
+    mface = [f for f in bm.faces if f.material_index == MOUTH]
+    mbm = bmesh.new(); muv = mbm.loops.layers.uv.new(udim); vmap = {}
+    for f in mface:
+        nv = []
+        for v in f.verts:
+            if v not in vmap: vmap[v] = mbm.verts.new(v.co)
+            nv.append(vmap[v])
+        try:
+            nf = mbm.faces.new(nv)
+            for lsrc, ldst in zip(f.loops, nf.loops):
+                ldst[muv].uv = lsrc[src_uv].uv
+        except ValueError:
+            pass
+    mbm.normal_update()
+    mouth_me = bpy.data.meshes.new("VitMouthMesh"); mouth_me.materials.append(bpy.data.materials.new("VitMouth"))
+    mbm.to_mesh(mouth_me); mbm.free()
+    mouth_obj = bpy.data.objects.new("VitMouth", mouth_me)
+    bpy.context.scene.collection.objects.link(mouth_obj)
+    log("mouth interior split: verts", len(mouth_me.vertices), "faces", len(mouth_me.polygons))
+
+    # remove the interior faces from the SKIN (leaves the lip-rimmed opening); scalp merges to skin
+    bmesh.ops.delete(bm, geom=[f for f in bm.faces if f.material_index in (MOUTH, SCALP)], context='FACES')
+    bm.verts.ensure_lookup_table()
+    bmesh.ops.delete(bm, geom=[v for v in bm.verts if not v.link_faces], context='VERTS')
+    bm.to_mesh(me); bm.free(); me.update()
     scalp_obj = None
+    log("head(skin) verts", len(me.vertices))
+
+    # single VitSkin surface (morphs render on a single surface; lips live here)
     me.materials.clear(); me.materials.append(bpy.data.materials.new("VitSkin"))
     for p in me.polygons: p.material_index = 0
     me.update()
-    log("morph mesh: SINGLE surface, no separation (scalp merged into skin)")
+    log("morph mesh: SINGLE surface (skin+lips; mouth interior is a separate dark mesh)")
 
-    # mouth verts from UV tile 1006 (post-rebuild indices)
-    uvl2=me.uv_layers[udim].data
-    mouth_vidx=set()
-    for poly in me.polygons:
-        u,v=uvl2[poly.loop_indices[0]].uv
-        tile=1001+int(math.floor(u))+10*int(math.floor(v))
-        if tile==1006:
-            for vi in poly.vertices: mouth_vidx.add(vi)
+    # LIP verts (skin verts ringing the mouth opening) drive smile/frown/funnel + set the
+    # lip-line for jawOpen. Identify geometrically since tile 1006 is no longer in the skin.
+    co0 = np.array([me.vertices[i].co for i in range(len(me.vertices))])
+    mouth_vidx = set(int(i) for i in range(len(me.vertices))
+                     if abs(co0[i][0]) < 0.046 and co0[i][1] < -0.026 and 1.543 < co0[i][2] < 1.598)
+    log("lip verts (skin):", len(mouth_vidx))
 
     # =============== shape keys ===============
     obj.shape_key_add(name="Basis",from_mix=False)
@@ -113,12 +133,14 @@ try:
         dy=base[i][1]-JPY; dz=base[i][2]-JPZ; a=A*w
         ca,sa=math.cos(a),math.sin(a)
         off[i]=[0.0,(JPY+ca*dy-sa*dz)-base[i][1],(JPZ+sa*dy+ca*dz)-base[i][2]]
-    # recess the inner-lip rim (upper + lower) into the head so the open gap is shadowed
+    # small inner-lip recess so the lower lip tucks slightly BEHIND nothing-but-air and
+    # doesn't clip forward of the teeth mesh as it drops (the dark VitMouth supplies the
+    # actual cavity now, so this is just anti-clip, not the shadow trick).
     for vi in sorted(mouth_vidx):
         dzc=abs(base[vi][2]-mcz)
-        if dzc<0.011:
-            rw=1.0-dzc/0.011
-            off[vi][1]+=0.012*rw                       # +Y = backward into the head
+        if dzc<0.010:
+            rw=1.0-dzc/0.010
+            off[vi][1]+=0.005*rw                       # +Y = backward into the head
     log("jawOpen",add_key("jawOpen",off))
     def corner_shape(corner, dx, dy, dz, rad, only_below=False, only_mouth=True):
         off=zeros()
@@ -343,6 +365,7 @@ try:
     bpy.ops.object.select_all(action='DESELECT')
     obj.select_set(True)
     if scalp_obj: scalp_obj.select_set(True)
+    if mouth_obj: mouth_obj.select_set(True)
     for d in eye_objs: d.select_set(True)
     bpy.context.view_layer.objects.active=obj
     glb=os.path.join(OUT,"vitruvian_head.glb")
