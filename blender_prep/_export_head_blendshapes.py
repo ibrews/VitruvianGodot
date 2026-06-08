@@ -20,7 +20,7 @@ def flush():
     os.makedirs(os.path.dirname(LOG),exist_ok=True); open(LOG,"w",encoding="utf-8").write("\n".join(_l))
 NECK_CUT_Z=1.49
 SOCK={"L":Vector((-0.0335,-0.0531,1.6344)),"R":Vector((0.0335,-0.0531,1.6344))}
-EYE_R=0.0125; EYE_RECESS=0.0025; IRIS_FWD=Vector((0.0,-1.0,0.0))   # forward so eyeballs sit in the socket opening (not buried behind skin)
+EYE_R=0.0120; EYE_RECESS=0.0050; IRIS_FWD=Vector((0.0,-1.0,0.0))   # slightly smaller + deeper so the eyeball edge stops clipping through the lid skin
 try:
     obj=bpy.data.objects["cm_vitruvian"]
     for m in list(obj.modifiers):
@@ -150,8 +150,12 @@ try:
             _emit_lash(bm,uvl,root,lash_dir,side,0.0042,0.0008,0.00012,-0.0008,k%NCOLS)
         m=bpy.data.meshes.new(name); bm.normal_update(); bm.to_mesh(m); bm.free()
         m.materials.append(lash_mat); o=bpy.data.objects.new(name,m); bpy.context.scene.collection.objects.link(o); return o
-    for side_name,center in SOCK.items():
-        eye_objs.append(build_lashes(center+Vector((0.0,EYE_RECESS,0.0)),EYE_R,"Lash_%s"%side_name))
+    # Eyelashes DISABLED — the procedural lash cards read as freaky dark scratch-marks
+    # hanging over the eye (user feedback). A clean eye with no lashes looks far better
+    # than bad card lashes. (Set LASHES=1 to re-enable the old build for experimentation.)
+    if os.environ.get("LASHES"):
+        for side_name,center in SOCK.items():
+            eye_objs.append(build_lashes(center+Vector((0.0,EYE_RECESS,0.0)),EYE_R,"Lash_%s"%side_name))
 
     # ---- procedural EYELIDS (skin caps over the eyeball top/bottom) ----
     # Fixes the "doll-eye" (bare sphere in socket) by giving the eye an almond shape,
