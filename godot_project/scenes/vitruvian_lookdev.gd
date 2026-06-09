@@ -54,7 +54,7 @@ var iris_col_dark: Color = Color(0.025, 0.016, 0.010)   # dark limbal/pupil-edge
 var iris_col_mid: Color = Color(0.20, 0.115, 0.050)     # rich mid brown
 var iris_col_bright: Color = Color(0.46, 0.31, 0.145)   # warm bright fleck
 # body + clothing
-var body_skin_mat: StandardMaterial3D
+var body_skin_mat: ShaderMaterial   # same skin shader as the face → consistent neck (no tan line)
 var shirt_mat: StandardMaterial3D
 var pants_mat: StandardMaterial3D
 var _body_root: Node3D
@@ -910,17 +910,39 @@ func _make_mouth() -> StandardMaterial3D:
 	return m
 
 
-func _make_body_skin() -> StandardMaterial3D:
-	# Flat skin tone for exposed body (hands/forearms/feet/neck); clothing covers the
-	# rest. Tone sampled from the CharMorph body skin EXR (tile 1002).
+func _make_body_skin() -> ShaderMaterial:
+	# SAME skin shader as the face (flat tone, no textures) so the neck/hands shade
+	# identically to the face — fixes the 'blocky tan line' where head meets body.
 	if body_skin_mat == null:
-		body_skin_mat = StandardMaterial3D.new()
-		body_skin_mat.albedo_color = Color(0.69, 0.53, 0.49)   # ~sRGB of sampled linear tone
-		body_skin_mat.roughness = 0.62
-		body_skin_mat.metallic = 0.0
-		body_skin_mat.metallic_specular = 0.4
-		body_skin_mat.subsurf_scatter_enabled = true
-		body_skin_mat.subsurf_scatter_strength = 0.25
+		var img := Image.create(2, 2, false, Image.FORMAT_RGBA8); img.fill(Color.WHITE)
+		var wt := ImageTexture.create_from_image(img)
+		body_skin_mat = ShaderMaterial.new()
+		body_skin_mat.shader = load("res://scenes/skin_shader_local.gdshader") as Shader
+		body_skin_mat.set_shader_parameter("texture_albedo", wt)
+		body_skin_mat.set_shader_parameter("albedo", Color(0.69, 0.53, 0.49))   # flat body tone
+		body_skin_mat.set_shader_parameter("normal_strength", 0.0)
+		body_skin_mat.set_shader_parameter("roughness", 0.85)
+		body_skin_mat.set_shader_parameter("specular", 0.30)
+		body_skin_mat.set_shader_parameter("double_specularity", false)
+		body_skin_mat.set_shader_parameter("metallic", 0.0)
+		body_skin_mat.set_shader_parameter("metallic_texture_channel", Plane(1, 0, 0, 0))
+		body_skin_mat.set_shader_parameter("use_subsurface_scattering", true)
+		body_skin_mat.set_shader_parameter("use_noise", false)
+		body_skin_mat.set_shader_parameter("subsurface_scattering_strength", 0.55)
+		body_skin_mat.set_shader_parameter("skin_smoothness", 1.8)
+		body_skin_mat.set_shader_parameter("skin_fallof_smoothness", 1.05)
+		body_skin_mat.set_shader_parameter("sss_depth_scale", 1.1)
+		body_skin_mat.set_shader_parameter("old_lightwarp_fallof", false)
+		body_skin_mat.set_shader_parameter("tinted_shadow_penumbra", true)
+		body_skin_mat.set_shader_parameter("use_micro_detail", false)
+		body_skin_mat.set_shader_parameter("micro_normal_strength", 0.0)
+		body_skin_mat.set_shader_parameter("use_ambient_occlusion", false)
+		body_skin_mat.set_shader_parameter("translucency", false)
+		body_skin_mat.set_shader_parameter("use_scatter_map", false)
+		body_skin_mat.set_shader_parameter("uv1_scale", Vector3(1, 1, 1))
+		body_skin_mat.set_shader_parameter("uv1_offset", Vector3(0, 0, 0))
+		body_skin_mat.set_shader_parameter("uv2_scale", Vector3(1, 1, 1))
+		body_skin_mat.set_shader_parameter("uv2_offset", Vector3(0, 0, 0))
 	return body_skin_mat
 
 
@@ -1004,9 +1026,11 @@ func _make_hair() -> ShaderMaterial:
 
 func _make_browcards() -> ShaderMaterial:
 	if vit_brow_mat == null:
-		vit_brow_mat = _make_hair_card(Color(0.11, 0.078, 0.05), 0.28, 0.45, 0.72)
-		vit_brow_mat.set_shader_parameter("anisotropy", 0.5)
-		vit_brow_mat.set_shader_parameter("tonal_variation", 0.3)
+		# MATTE to match the scalp hair (was shiny: low roughness + strong anisotropic
+		# highlight). High roughness, near-zero specular + anisotropy = no shine.
+		vit_brow_mat = _make_hair_card(Color(0.11, 0.078, 0.05), 0.28, 0.45, 0.92, "res://vit_hair_atlas.png", 0.02)
+		vit_brow_mat.set_shader_parameter("anisotropy", 0.05)
+		vit_brow_mat.set_shader_parameter("tonal_variation", 0.2)
 	return vit_brow_mat
 
 
@@ -1296,7 +1320,7 @@ func _build_ui() -> void:
 	_mkcheck(vb, "show_body", "show body (off = head only)", true, func(on):
 		show_body = on
 		for bmi in _body_meshes: bmi.visible = on)
-	_mkcolor(vb, "body_skin_color", "body skin", Color(0.69, 0.53, 0.49), func(c): if body_skin_mat: body_skin_mat.albedo_color = c)
+	_mkcolor(vb, "body_skin_color", "body skin", Color(0.69, 0.53, 0.49), func(c): if body_skin_mat: body_skin_mat.set_shader_parameter("albedo", c))
 	_mkcolor(vb, "shirt_color", "shirt colour", Color(0.18, 0.22, 0.30), func(c): if shirt_mat: shirt_mat.albedo_color = c)
 	_mkslider(vb, "shirt_rough", "shirt roughness", 0.0, 1.0, 0.01, 0.85, func(v): if shirt_mat: shirt_mat.roughness = v)
 	_mkcolor(vb, "pants_color", "pants colour", Color(0.12, 0.12, 0.14), func(c): if pants_mat: pants_mat.albedo_color = c)

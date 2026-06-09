@@ -236,11 +236,27 @@ def clip_length(strands, z_floor):
             out.append(np.array(keep))
     return out
 
+def lift_front(strands, push=0.007):
+    # push the FRONT-HAIRLINE strands (forehead roots) OUTWARD off the face so the cards
+    # sit on top of the forehead skin instead of clipping THROUGH it (which let the bright
+    # forehead show between cards). Forward push only (not up) so the crown doesn't sprout.
+    hc = np.array([HEAD_C[0], HEAD_C[1], HEAD_C[2]])
+    out = []
+    for st in strands:
+        r = st[0]
+        if r[1] < -0.025 and 1.58 < r[2] < 1.73:        # forehead / front hairline roots
+            radial = r - hc; n = np.linalg.norm(radial)
+            radial = radial / n if n > 1e-6 else np.array([0.0, -1.0, 0.0])
+            st = st + radial * push
+        out.append(st)
+    return out
+
 _hair_strands = clip_over_face(load_strands("Eve.npz", 2))
 _hair_strands = clip_length(_hair_strands, 1.46)        # neck-length bob (ends ~neck/jaw)
 _hair_strands = _hair_strands + crown_fill(_hair_strands, n_extra=1100)
 _hair_strands = make_children(_hair_strands, k=12, root_spread=0.0050, tip_spread=0.012)  # denser → less polygonal
 _hair_strands = add_crown_volume(_hair_strands, amount=0.005)   # gentle (high volume = crown sticks up)
+_hair_strands = lift_front(_hair_strands, push=0.008)   # lift forehead hair off the face skin
 print("[hair] total %d strands (Eve + crown_fill + children + volume)" % len(_hair_strands))
 # REGROOM: more, thinner, finer-tipped cards. Wisps applied ONLY to the long hanging
 # locks (build_cards gates on tip height) so the length tapers to fine wisps while the

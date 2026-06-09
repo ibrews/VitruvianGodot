@@ -678,14 +678,37 @@ func _mat_discard() -> ShaderMaterial:
 	m.shader = load("res://scenes/hidden_discard.gdshader") as Shader
 	return m
 
-func _mat_body_skin() -> StandardMaterial3D:
-	var m := StandardMaterial3D.new()
-	m.albedo_color = Color(0.69, 0.53, 0.49)
-	m.roughness = 0.62
-	m.metallic = 0.0
-	m.metallic_specular = 0.4
-	m.subsurf_scatter_enabled = true
-	m.subsurf_scatter_strength = 0.25
+func _mat_body_skin() -> ShaderMaterial:
+	# same skin shader as the face (flat tone) → consistent neck, no tan line
+	var img := Image.create(2, 2, false, Image.FORMAT_RGBA8); img.fill(Color.WHITE)
+	var wt := ImageTexture.create_from_image(img)
+	var m := ShaderMaterial.new()
+	m.shader = load("res://scenes/skin_shader_local.gdshader") as Shader
+	m.set_shader_parameter("texture_albedo", wt)
+	m.set_shader_parameter("albedo", Color(0.69, 0.53, 0.49))
+	m.set_shader_parameter("normal_strength", 0.0)
+	m.set_shader_parameter("roughness", 0.85)
+	m.set_shader_parameter("specular", 0.30)
+	m.set_shader_parameter("double_specularity", false)
+	m.set_shader_parameter("metallic", 0.0)
+	m.set_shader_parameter("metallic_texture_channel", Plane(1, 0, 0, 0))
+	m.set_shader_parameter("use_subsurface_scattering", true)
+	m.set_shader_parameter("use_noise", false)
+	m.set_shader_parameter("subsurface_scattering_strength", 0.55)
+	m.set_shader_parameter("skin_smoothness", 1.8)
+	m.set_shader_parameter("skin_fallof_smoothness", 1.05)
+	m.set_shader_parameter("sss_depth_scale", 1.1)
+	m.set_shader_parameter("old_lightwarp_fallof", false)
+	m.set_shader_parameter("tinted_shadow_penumbra", true)
+	m.set_shader_parameter("use_micro_detail", false)
+	m.set_shader_parameter("micro_normal_strength", 0.0)
+	m.set_shader_parameter("use_ambient_occlusion", false)
+	m.set_shader_parameter("translucency", false)
+	m.set_shader_parameter("use_scatter_map", false)
+	m.set_shader_parameter("uv1_scale", Vector3(1, 1, 1))
+	m.set_shader_parameter("uv1_offset", Vector3(0, 0, 0))
+	m.set_shader_parameter("uv2_scale", Vector3(1, 1, 1))
+	m.set_shader_parameter("uv2_offset", Vector3(0, 0, 0))
 	return m
 
 func _mat_shirt() -> StandardMaterial3D:

@@ -206,7 +206,9 @@ try:
         # chest/shoulder skin, which would poke through the shirt as skin blotches.
         def keepneck(f):
             c=f.calc_center_median()
-            return 1.42 < c.z <= 1.50 and (c.x*c.x + (c.y+0.02)**2) < 0.070*0.070
+            # wider + a touch lower so the collar opening (incl the front dip + clavicle
+            # corners) is filled with skin — no holes. The inflated shirt hides the excess.
+            return 1.39 < c.z <= 1.50 and (c.x*c.x + (c.y+0.02)**2) < 0.090*0.090
         todel=[f for f in bm.faces if head(f) or (all(covered[v.index] for v in f.verts) and not keepneck(f))]
         bmesh.ops.delete(bm, geom=todel, context='FACES')
         bm.verts.ensure_lookup_table()
