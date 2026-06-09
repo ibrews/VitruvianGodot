@@ -339,8 +339,13 @@ func _setup_environment() -> void:
 	env.tonemap_white = 6.0
 	env.ssil_enabled = true
 	env.ssao_enabled = true
-	env.ssao_radius = 0.4
-	env.ssao_intensity = 1.4
+	env.ssao_radius = 0.6          # larger radius = smoother, less blocky contact AO
+	env.ssao_intensity = 1.0       # gentler so the chin→neck AO isn't a hard dark band
+	env.ssao_detail = 0.2
+	env.ssao_power = 1.5
+	# HIGH-quality SSAO + soft shadows so the neck shadow reads smooth, not stair-stepped
+	RenderingServer.environment_set_ssao_quality(RenderingServer.ENV_SSAO_QUALITY_HIGH, true, 0.5, 2, 50.0, 300.0)
+	RenderingServer.directional_soft_shadow_filter_set_quality(RenderingServer.SHADOW_QUALITY_SOFT_HIGH)
 	env.glow_enabled = true
 	env.glow_intensity = 0.45
 	env.glow_strength = 0.9
@@ -392,10 +397,15 @@ func _setup_lights() -> void:
 	key_light.light_energy = 3.2
 	key_light.light_color = Color(1.0, 0.90, 0.76)
 	key_light.shadow_enabled = true
-	key_light.shadow_bias = 0.04
-	key_light.shadow_normal_bias = 2.0
-	key_light.shadow_blur = 3.0
+	key_light.shadow_bias = 0.03
+	key_light.shadow_normal_bias = 1.2
+	key_light.shadow_blur = 3.5
 	key_light.light_angular_distance = 4.5
+	# concentrate the 4096 shadow map on the CHARACTER (not the whole scene) so the
+	# chin→neck contact shadow is high-res + soft, not the blocky stair-stepped band.
+	key_light.directional_shadow_mode = DirectionalLight3D.SHADOW_ORTHOGONAL
+	key_light.directional_shadow_max_distance = 4.5
+	key_light.directional_shadow_blend_splits = true
 	_apply_light_rot(key_light, key_pitch, key_yaw)
 	add_child(key_light)
 

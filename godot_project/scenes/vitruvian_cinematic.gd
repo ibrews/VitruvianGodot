@@ -109,8 +109,12 @@ func _setup_env() -> void:
 	env.tonemap_exposure = 1.0
 	env.tonemap_white = 6.0
 	env.ssao_enabled = true
-	env.ssao_radius = 0.5
-	env.ssao_intensity = 2.0
+	env.ssao_radius = 0.6          # smoother, less blocky contact AO under the chin/neck
+	env.ssao_intensity = 1.2
+	env.ssao_detail = 0.2
+	env.ssao_power = 1.5
+	RenderingServer.environment_set_ssao_quality(RenderingServer.ENV_SSAO_QUALITY_HIGH, true, 0.5, 2, 50.0, 300.0)
+	RenderingServer.directional_soft_shadow_filter_set_quality(RenderingServer.SHADOW_QUALITY_SOFT_HIGH)
 	env.ssil_enabled = true
 	env.glow_enabled = true
 	env.glow_intensity = 0.5
@@ -147,8 +151,12 @@ func _setup_lights() -> void:
 	key.light_energy = 3.4
 	key.light_color = Color(1.0, 0.89, 0.74)
 	key.shadow_enabled = true
-	key.shadow_blur = 2.5
+	key.shadow_blur = 3.5
+	key.shadow_normal_bias = 1.2
 	key.light_angular_distance = 3.0
+	# concentrate the shadow map on the character → smooth (not blocky) neck contact shadow
+	key.directional_shadow_mode = DirectionalLight3D.SHADOW_ORTHOGONAL
+	key.directional_shadow_max_distance = 4.5
 	key.rotation_degrees = Vector3(-38, -68, 0)
 	add_child(key)
 	key_light = key

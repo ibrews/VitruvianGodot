@@ -18,7 +18,8 @@ OUT = r"H:/Work01/VitruvianGodot/godot_project"
 HAIRDIR = os.path.join(VDIR, "hairstyles")
 NCOLS = 4
 HEAD_C = Vector((0.0, -0.02, 1.66))
-FLOOR_Z = 1.44   # neck line — no hair card extends below this (keeps hair off the chest/body)
+FLOOR_Z = 1.495  # jaw line — no hair card extends below this. Keeps the bob clearly ABOVE
+                 # the shoulders/collar (~1.42-1.46) so it never intersects the shirt.
 
 
 def load_strands(npz, point_step):
@@ -149,9 +150,9 @@ def build_cards(strands, stride, w_root, w_tip, roll_max, name, wisp_ext=0.0):
             jitter = Vector((h(si * 3.1) - 0.5, h(si * 5.7) - 0.5, h(si * 7.3) - 0.5)) * seg * 0.4
             P.append(P[-1] + tip_dir * seg * (1.0 + wisp_ext) + jitter)
             P.append(P[-1] + tip_dir * seg * wisp_ext + jitter * 0.5)
-        # neck-line floor, VARIED per strand so the ends feather (no bunched clump). Kept
-        # ABOVE the shoulders (~1.45-1.50) so stray tips don't drape onto the chest/shirt.
-        floor_z = 1.465 + (h(si * 2.7) - 0.45) * 0.05
+        # jaw-line floor, VARIED per strand so the ends feather (no bunched clump). Kept
+        # clearly ABOVE the shoulders so tips never drape onto the shirt.
+        floor_z = FLOOR_Z + (h(si * 2.7) - 0.4) * 0.045
         cut = None
         for i in range(len(P)):
             if P[i].z < floor_z:
@@ -244,7 +245,7 @@ def lift_front(strands, push=0.007):
     out = []
     for st in strands:
         r = st[0]
-        if r[1] < -0.025 and 1.58 < r[2] < 1.73:        # forehead / front hairline roots
+        if r[1] < -0.018 and 1.55 < r[2] < 1.74:        # forehead / front hairline roots (wider)
             radial = r - hc; n = np.linalg.norm(radial)
             radial = radial / n if n > 1e-6 else np.array([0.0, -1.0, 0.0])
             st = st + radial * push
@@ -252,11 +253,11 @@ def lift_front(strands, push=0.007):
     return out
 
 _hair_strands = clip_over_face(load_strands("Eve.npz", 2))
-_hair_strands = clip_length(_hair_strands, 1.46)        # neck-length bob (ends ~neck/jaw)
+_hair_strands = clip_length(_hair_strands, 1.50)        # jaw-length bob (clears the shoulders)
 _hair_strands = _hair_strands + crown_fill(_hair_strands, n_extra=1100)
 _hair_strands = make_children(_hair_strands, k=12, root_spread=0.0050, tip_spread=0.012)  # denser → less polygonal
 _hair_strands = add_crown_volume(_hair_strands, amount=0.005)   # gentle (high volume = crown sticks up)
-_hair_strands = lift_front(_hair_strands, push=0.008)   # lift forehead hair off the face skin
+_hair_strands = lift_front(_hair_strands, push=0.014)   # lift forehead hair well off the face skin
 print("[hair] total %d strands (Eve + crown_fill + children + volume)" % len(_hair_strands))
 # REGROOM: more, thinner, finer-tipped cards. Wisps applied ONLY to the long hanging
 # locks (build_cards gates on tip height) so the length tapers to fine wisps while the
