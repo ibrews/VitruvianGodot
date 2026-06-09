@@ -13,3 +13,17 @@ Thumbs.db
 
 # look-dev capture output
 out/
+
+# ── builds & renders (shipped as GitHub Release assets, not committed) ──
+dist/
+out/
+# local Claude config / memory
+.claude/
+# backups + Hair Tool intermediate working files (the groom is rebuilt by build_vitruvian_hair.py)
+*.bak
+*.bak2
+blender_prep/hairtool_out/
+blender_prep/hairtool_work.blend
+blender_prep/hairtool_work2.blend
+blender_prep/vitruvian_hairtool.blend
+blender_prep/facs_tmp/

@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://b3vitruvianht01"]
+
+[ext_resource type="Script" path="res://scenes/vitruvian_hairtool_lookdev.gd" id="1_vitht"]
+
+[node name="VitruvianHairToolLookDev" type="Node3D"]
+script = ExtResource("1_vitht")

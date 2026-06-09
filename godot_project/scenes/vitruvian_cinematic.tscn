@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3 uid="uid://b3vitruviancine1"]
+
+[ext_resource type="Script" path="res://scenes/vitruvian_cinematic.gd" id="1_cine"]
+
+[node name="VitruvianCinematic" type="Node3D"]
+script = ExtResource("1_cine")
