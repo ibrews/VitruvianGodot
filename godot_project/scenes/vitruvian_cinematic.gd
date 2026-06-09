@@ -178,7 +178,7 @@ func _setup_lights() -> void:
 	# eye catch-light: a small bright omni near the face for the wet eye spark
 	# (without it the eyes read dead). Repositioned each frame in _update_camera.
 	catch_light = OmniLight3D.new()
-	catch_light.light_energy = 1.6
+	catch_light.light_energy = 0.1
 	catch_light.light_specular = 1.0
 	catch_light.light_color = Color(1.0, 0.98, 0.95)
 	catch_light.omni_range = 0.9
@@ -502,7 +502,7 @@ func _update_camera(t: float) -> void:
 	if env:
 		env.tonemap_exposure = lerpf(1.0, 0.70, closeness)
 	if catch_light:
-		catch_light.light_energy = lerpf(1.6, 0.45, closeness)
+		catch_light.light_energy = 0.1
 	if key_light:
 		key_light.light_energy = lerpf(3.4, 2.1, closeness)
 	if rim_light:
@@ -546,10 +546,10 @@ func _mat_skin() -> ShaderMaterial:
 	m.set_shader_parameter("metallic", 0.0)
 	m.set_shader_parameter("metallic_texture_channel", Plane(1,0,0,0))
 	m.set_shader_parameter("use_subsurface_scattering", true)
-	m.set_shader_parameter("subsurface_scattering_strength", 0.6)
+	m.set_shader_parameter("subsurface_scattering_strength", 0.54)
 	m.set_shader_parameter("skin_smoothness", 1.8)
 	m.set_shader_parameter("skin_fallof_smoothness", 1.05)
-	m.set_shader_parameter("sss_depth_scale", 6.0)
+	m.set_shader_parameter("sss_depth_scale", 1.1)
 	m.set_shader_parameter("tinted_shadow_penumbra", true)
 	m.set_shader_parameter("double_specularity", false)
 	m.set_shader_parameter("use_noise", false)
@@ -580,7 +580,7 @@ func _mat_eyeball() -> ShaderMaterial:
 	m.set_shader_parameter("iris_radius", 0.32)
 	m.set_shader_parameter("iris_margin", 0.018)
 	m.set_shader_parameter("pupil_radius", 0.10)
-	m.set_shader_parameter("eye_white", Color(0.80, 0.75, 0.69))   # warm off-white sclera (not pure white)
+	m.set_shader_parameter("eye_white", Color(0.859, 0.831, 0.80))   # saved eye_white dbd4cc
 	m.set_shader_parameter("pupil_color", Color(0.012, 0.010, 0.014))
 	m.set_shader_parameter("texture_iris_color", _iris_ramp())
 	m.set_shader_parameter("eye_cell_scale", 19.0)

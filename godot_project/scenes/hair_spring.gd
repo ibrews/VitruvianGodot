@@ -7,7 +7,8 @@ class_name HairSpring
 @export var stiffness := 0.030     # pull back toward rest (lower = more lag/swing)
 @export var drag := 0.10           # velocity damping (lower = more overshoot/bounce)
 @export var gravity := 0.022       # downward settle per step (more = hangs down, not out)
-@export var comb_back := 0.032     # pull toward the head's BACK so hair drapes over/behind the shoulders (not curtaining the face/chest)
+@export var comb_back := 0.012     # gentle back-bias only (just keep hair off the face). Higher
+                                   # values swept the hair into a stiff 'hairsprayed' back-comb.
 @export var comb_back_sign := -1.0 # head +Z is the face dir for this rig → back = -Z
 @export var root_bone := "HR0"     # rigid root (not simulated)
 

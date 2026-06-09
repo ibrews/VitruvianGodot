@@ -427,7 +427,7 @@ func _setup_lights() -> void:
 
 	catch_light = OmniLight3D.new()
 	catch_light.name = "CatchLight"
-	catch_light.light_energy = 1.6 # bright eye-spark (was 0.12 = dead eyes)
+	catch_light.light_energy = 0.1 # subtle eye-spark (user pref; saved CATCH=0.1)
 	catch_light.light_specular = 1.0
 	catch_light.light_color = Color(1.0, 0.98, 0.95)
 	catch_light.omni_range = 0.9                # localized to the face so it's a spark, not a fill
@@ -823,7 +823,7 @@ func _make_skin() -> ShaderMaterial:
 	mat.set_shader_parameter("subsurface_scattering_strength", 0.55)
 	mat.set_shader_parameter("skin_smoothness", 1.8)
 	mat.set_shader_parameter("skin_fallof_smoothness", 1.05)
-	mat.set_shader_parameter("sss_depth_scale", 6.0)
+	mat.set_shader_parameter("sss_depth_scale", 1.1)
 	mat.set_shader_parameter("old_lightwarp_fallof", false)
 	mat.set_shader_parameter("tinted_shadow_penumbra", true)
 	mat.set_shader_parameter("use_micro_detail", false)
@@ -1307,7 +1307,7 @@ func _build_ui() -> void:
 	_mkslider(vb, "SKIN_NRM", "normal_strength", 0.0, 8.0, 0.01, 1.0, _skin_setter("normal_strength"))
 	_mkslider(vb, "SKIN_SSS", "subsurface_scattering", 0.0, 1.0, 0.01, 0.55, _skin_setter("subsurface_scattering_strength"))
 	_mkslider(vb, "SKIN_SMOOTH", "skin_smoothness", 0.0, 6.0, 0.01, 1.8, _skin_setter("skin_smoothness"))
-	_mkslider(vb, "sss_depth", "sss_depth_scale", 0.5, 12.0, 0.1, 6.0, _skin_setter("sss_depth_scale"))
+	_mkslider(vb, "sss_depth", "sss_depth_scale", 0.5, 12.0, 0.1, 1.1, _skin_setter("sss_depth_scale"))
 	_mkslider(vb, "skin_rough", "roughness", 0.0, 1.0, 0.01, 0.95, _skin_setter("roughness"))
 	_mkslider(vb, "skin_spec", "specular", 0.0, 2.0, 0.01, 0.35, _skin_setter("specular"))
 	_mkcheck(vb, "use_sss", "use_subsurface_scattering", true, _skin_setter_b("use_subsurface_scattering"))
@@ -1337,7 +1337,7 @@ func _build_ui() -> void:
 
 	# ── CATCHLIGHT ──
 	_hdr(vb, "Catchlight (frontal omni)")
-	_mkslider(vb, "CATCH", "energy", 0.0, 4.0, 0.01, 0.85, func(v): catch_light.light_energy = v)
+	_mkslider(vb, "CATCH", "energy", 0.0, 4.0, 0.01, 0.1, func(v): catch_light.light_energy = v)
 
 	# ── ENVIRONMENT ──
 	_hdr(vb, "Environment")

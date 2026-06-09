@@ -149,9 +149,9 @@ def build_cards(strands, stride, w_root, w_tip, roll_max, name, wisp_ext=0.0):
             jitter = Vector((h(si * 3.1) - 0.5, h(si * 5.7) - 0.5, h(si * 7.3) - 0.5)) * seg * 0.4
             P.append(P[-1] + tip_dir * seg * (1.0 + wisp_ext) + jitter)
             P.append(P[-1] + tip_dir * seg * wisp_ext + jitter * 0.5)
-        # neck-line floor, VARIED per strand so the ends feather across ~1.41-1.49 instead
-        # of all bunching at one z (which clumps the dark tips into patches on the shoulders).
-        floor_z = FLOOR_Z + (h(si * 2.7) - 0.4) * 0.09
+        # neck-line floor, VARIED per strand so the ends feather (no bunched clump). Kept
+        # ABOVE the shoulders (~1.45-1.50) so stray tips don't drape onto the chest/shirt.
+        floor_z = 1.465 + (h(si * 2.7) - 0.45) * 0.05
         cut = None
         for i in range(len(P)):
             if P[i].z < floor_z:
@@ -240,7 +240,7 @@ _hair_strands = clip_over_face(load_strands("Eve.npz", 2))
 _hair_strands = clip_length(_hair_strands, 1.46)        # neck-length bob (ends ~neck/jaw)
 _hair_strands = _hair_strands + crown_fill(_hair_strands, n_extra=1100)
 _hair_strands = make_children(_hair_strands, k=12, root_spread=0.0050, tip_spread=0.012)  # denser → less polygonal
-_hair_strands = add_crown_volume(_hair_strands, amount=0.010)
+_hair_strands = add_crown_volume(_hair_strands, amount=0.005)   # gentle (high volume = crown sticks up)
 print("[hair] total %d strands (Eve + crown_fill + children + volume)" % len(_hair_strands))
 # REGROOM: more, thinner, finer-tipped cards. Wisps applied ONLY to the long hanging
 # locks (build_cards gates on tip height) so the length tapers to fine wisps while the
