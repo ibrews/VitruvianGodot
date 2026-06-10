@@ -217,16 +217,27 @@ try:
         bm.to_mesh(me); bm.free(); me.update()
         log("body trimmed verts", len(me.vertices), "covered", sum(covered))
 
-        # INFLATE the shirt (push verts out along normals) so it sits proud of the skin and
-        # hides any poke-through (kept neck-column skin + upper chest). User OK'd a thicker shirt.
+        # INFLATE the shirt (push verts out along SMOOTHED normals) so it sits proud of the
+        # skin and hides any poke-through. Raw per-vert normals made the shoulder seams
+        # inflate into POINTY SPIKES (audit #5/Tier-1 #10): at a hard seam/crease the normal
+        # flips direction vert-to-vert, so +6mm tears the seam into peaks. Laplacian-smooth
+        # the normal field first → low-frequency, seam-stable inflation direction.
+        import numpy as _np
         for o in cloth:
             is_shirt = ("Shirt" in o.name) or (o.data.materials and "Shirt" in o.data.materials[0].name)
             if not is_shirt: continue
             sbm=bmesh.new(); sbm.from_mesh(o.data); sbm.normal_update()
-            for v in sbm.verts:
-                v.co += v.normal * 0.006        # ~6mm thicker
+            sbm.verts.ensure_lookup_table()
+            nrm=_np.array([tuple(v.normal) for v in sbm.verts])
+            nbrs=[[e.other_vert(v).index for e in v.link_edges] for v in sbm.verts]
+            for _ in range(8):
+                avg=_np.array([nrm[nb].mean(axis=0) if nb else nrm[i] for i,nb in enumerate(nbrs)])
+                nrm=0.5*nrm+0.5*avg
+                nrm/=_np.clip(_np.linalg.norm(nrm,axis=1,keepdims=True),1e-9,None)
+            for i,v in enumerate(sbm.verts):
+                v.co += Vector((nrm[i][0],nrm[i][1],nrm[i][2])) * 0.006
             sbm.to_mesh(o.data); sbm.free(); o.data.update()
-            log("inflated shirt", o.name)
+            log("inflated shirt (smoothed normals)", o.name)
 
         # optional clothed verification render (export pass) before writing GLB
         if "clothtest" in ARGS:
