@@ -104,6 +104,8 @@ func _setup_env() -> void:
 	sky_mat.ground_horizon_color = Color(0.02, 0.02, 0.03)
 	sky_mat.ground_bottom_color = Color(0.01, 0.01, 0.015)
 	sky_mat.energy_multiplier = 0.4
+	sky_mat.sun_angle_max = 0.0   # NO sun discs: 4 directional lights were
+	sky_mat.sun_curve = 0.02      # painting a giant white halo band on the horizon
 	var sky := Sky.new(); sky.sky_material = sky_mat
 	env = Environment.new()
 	env.background_mode = Environment.BG_SKY

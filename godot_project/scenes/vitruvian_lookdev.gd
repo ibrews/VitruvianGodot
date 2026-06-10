@@ -333,6 +333,8 @@ func _setup_environment() -> void:
 	sky_mat.ground_horizon_color = Color(0.04, 0.04, 0.05)
 	sky_mat.ground_bottom_color = Color(0.02, 0.02, 0.03)
 	sky_mat.energy_multiplier = 0.6
+	sky_mat.sun_angle_max = 0.0   # NO sun discs: 4 directional lights were
+	sky_mat.sun_curve = 0.02      # painting a giant white halo band on the horizon
 	var sky: Sky = Sky.new()
 	sky.sky_material = sky_mat
 	env = Environment.new()
@@ -372,10 +374,12 @@ func _setup_environment() -> void:
 
 
 func _setup_backdrop() -> void:
+	# offsets/colors assigned wholesale — Gradient.new() ships a WHITE point at 1.0
+	# and set_color(1) after add_point() recolors the wrong point (white far field).
 	var grad: Gradient = Gradient.new()
-	grad.set_color(0, Color(0.20, 0.19, 0.17))
-	grad.add_point(0.5, Color(0.10, 0.10, 0.10))
-	grad.set_color(1, Color(0.035, 0.037, 0.043))
+	grad.offsets = PackedFloat32Array([0.0, 0.5, 1.0])
+	grad.colors = PackedColorArray([
+		Color(0.20, 0.19, 0.17), Color(0.10, 0.10, 0.10), Color(0.035, 0.037, 0.043)])
 	var tex: GradientTexture2D = GradientTexture2D.new()
 	tex.gradient = grad
 	tex.width = 1024

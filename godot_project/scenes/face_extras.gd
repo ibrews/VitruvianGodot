@@ -78,11 +78,18 @@ static func make_vignette(root: Node, amount: float = 0.30, softness: float = 0.
 
 # Soft pool-of-light floor: radial gradient (lit under the character → black at the
 # edges) so there is no visible horizon line, while real shadows still land on it.
-static func make_floor(parent: Node, pool_tint: Color = Color(0.05, 0.048, 0.05)) -> MeshInstance3D:
+static func make_floor(parent: Node, pool_tint: Color = Color(0.085, 0.08, 0.085)) -> MeshInstance3D:
+	# NOTE: assign offsets/colors WHOLESALE. Gradient.new() ships black@0 + WHITE@1,
+	# and set_color(1, ...) after add_point() recolors the inserted point instead —
+	# leaving the default white at offset 1.0 = a glowing white sheet at the far field
+	# (the mystery horizon band).
 	var grad := Gradient.new()
-	grad.set_color(0, pool_tint)
-	grad.add_point(0.32, Color(pool_tint.r * 0.3, pool_tint.g * 0.3, pool_tint.b * 0.3))
-	grad.set_color(1, Color(0.004, 0.004, 0.005))
+	grad.offsets = PackedFloat32Array([0.0, 0.13, 0.26, 1.0])
+	grad.colors = PackedColorArray([
+		pool_tint,
+		Color(pool_tint.r * 0.4, pool_tint.g * 0.4, pool_tint.b * 0.4),
+		Color(0.004, 0.004, 0.005),
+		Color(0.003, 0.003, 0.004)])
 	var tex := GradientTexture2D.new()
 	tex.gradient = grad
 	tex.width = 512
@@ -93,15 +100,20 @@ static func make_floor(parent: Node, pool_tint: Color = Color(0.05, 0.048, 0.05)
 	var mat := StandardMaterial3D.new()
 	mat.albedo_texture = tex
 	mat.albedo_color = Color(1, 1, 1)
-	mat.roughness = 0.72
+	mat.roughness = 0.96
 	mat.metallic = 0.0
+	mat.metallic_specular = 0.02   # kill grazing-angle Fresnel — the floor blew out white
+	                               # as a mirror sheet under the strong cinematic lights
 	var mi := MeshInstance3D.new()
 	mi.name = "Floor"
 	var pm := PlaneMesh.new()
-	pm.size = Vector2(9.0, 9.0)
+	pm.size = Vector2(30.0, 30.0)   # runs past the visible horizon at portrait pitches
+	                                # (a small plane ended in a bright band at its far edge)
 	mi.mesh = pm
 	mi.material_override = mat
 	mi.position = Vector3(0, 0, 0)
 	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	if OS.has_environment("NO_FLOOR"):
+		mi.visible = false   # A/B diagnostic hook
 	parent.add_child(mi)
 	return mi
