@@ -81,7 +81,10 @@ void fragment() {
 
 	ALBEDO = base;
 	EMISSION = base * emit;
-	BACKLIGHT = backlight_color.rgb * backlight_strength;
+	// Backlight tinted FROM the hair albedo (not a fixed warm colour) so light passing
+	// through the mass doesn't hue-shift the hair golden in profile/backlit angles.
+	vec3 bl_tint = mix(grad, backlight_color.rgb, 0.25);
+	BACKLIGHT = bl_tint * backlight_strength;
 	AO = mix(1.0, ao, ao_strength);
 	AO_LIGHT_AFFECT = 1.0;
 
@@ -91,7 +94,11 @@ void fragment() {
 	NORMAL_MAP = normalize(n) * 0.5 + 0.5;
 	NORMAL_MAP_DEPTH = 1.0;
 
-	ROUGHNESS = roughness_val;
+	// Specular AA: where the strand normal map changes fast on screen (minified cards),
+	// raise roughness so GGX can't alias into white/blue glitter sparks in the dark mass.
+	vec3 nvar = fwidth(n);
+	float spec_aa = clamp((nvar.x + nvar.y) * 3.0, 0.0, 0.45);
+	ROUGHNESS = clamp(roughness_val + spec_aa, 0.0, 1.0);
 	SPECULAR = specular_val;
 	METALLIC = 0.0;
 

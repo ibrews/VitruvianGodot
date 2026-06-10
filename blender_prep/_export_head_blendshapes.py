@@ -79,6 +79,23 @@ try:
           "Eyebrows_Raised_Left","Eyebrows_Raised_Right","Eyebrows_Frown_Left","Eyebrows_Frown_Right",
           "Eyes_Closed_Max","Eyes_Opened_Max_Left","Eyes_Opened_Max_Right","Eyes_Squint",
           "aa_02","ow_08","p_b_m_21","f_v_18","ey_eh_uh_04"]
+    # ---- tongue rest-pose shrink (audit: open mouth read 'muppet' — the tongue was a
+    # flat slab filling the whole aperture). The L3 Tongue_* morph indices identify the
+    # tongue verts EXACTLY; scale them 15% toward a back-bottom pivot so the tip pulls
+    # back into the mouth while the root stays attached to the floor of the bag. Done
+    # BEFORE shape keys so 'base' (and every FACS key) sees the shrunk rest pose.
+    TONGUE=set()
+    for tn in ("Tongue_Up","Tongue_Down","Tongue_Forward","Tongue_Left","Tongue_Right"):
+        tz=np.load(os.path.join(L3,tn+".npz"),allow_pickle=True)
+        ti=tz["idx"].astype(int); td=np.abs(tz["delta"]).sum(axis=1)
+        TONGUE.update(ti[td>1e-6].tolist())
+    tverts=[i for i in range(len(me.vertices)) if new_to_orig[i] in TONGUE]
+    if tverts:
+        tcos=[me.vertices[i].co.copy() for i in tverts]
+        pivot=Vector((0.0, max(c.y for c in tcos), min(c.z for c in tcos)))  # back(+Y)/bottom anchor
+        for i in tverts:
+            me.vertices[i].co = pivot + (me.vertices[i].co - pivot) * 0.85
+        log("tongue shrink 15%: verts", len(tverts), "pivot", tuple(round(v,4) for v in pivot))
     nv=len(me.vertices)
     base=np.array([me.vertices[i].co for i in range(nv)])
     obj.shape_key_add(name="Basis",from_mix=False)

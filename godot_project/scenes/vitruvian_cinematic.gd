@@ -10,6 +10,7 @@ extends Node3D
 # Capture: CINEMA_CAPTURE=<dir> Godot ... scenes/vitruvian_cinematic.tscn  → PNG frames
 # ════════════════════════════════════════════════════════════════════════════
 
+const FaceExtras = preload("res://scenes/face_extras.gd")
 const BODY_GLB := "res://vitruvian_body.glb"
 const HEAD_GLB := "res://vitruvian_head.glb"
 const HAIR_GLB := "res://hairtool_cards.glb"
@@ -53,6 +54,11 @@ var bshapes: Dictionary = {}                # ARKit name -> blend shape index
 var eye_nodes: Array = []                   # [{node, rest_scale}] eyeball + cornea spheres
 var upper_lids: Array = []                  # [{node, rest_basis}] upper eyelids (rotate down to blink)
 var _gaze: Vector2 = Vector2.ZERO           # smoothed eye look (yaw,pitch rad)
+# resting-gaze correction (audit: doll stare slightly down + inward). Same values as
+# look-dev (calibrated via EYE_SHOT / GAZE_TUNE captures there).
+const GAZE_PITCH_BIAS: float = 0.05         # lift gaze to camera height
+const GAZE_DIVERGE: float = 0.012           # rotate each eye slightly OUTWARD (un-cross)
+var eyeball_mats: Array[ShaderMaterial] = []  # for pupil dilation on the close-up push-in
 # Godot 4.6.3 does not reliably render native blend-shape combos on this imported mesh
 # (and normalized mode scales combined weights down). Drive the face by rebuilding the
 # surface on the CPU = base + Σ weight*delta (additive, full strength). Matches lookdev.
@@ -133,17 +139,9 @@ func _setup_env() -> void:
 	add_child(we)
 	RenderingServer.sub_surface_scattering_set_quality(RenderingServer.SUB_SURFACE_SCATTERING_QUALITY_HIGH)
 	RenderingServer.sub_surface_scattering_set_scale(0.08, 0.02)
-	# floor catching a soft pool of light
-	var floor := MeshInstance3D.new()
-	var pm := PlaneMesh.new(); pm.size = Vector2(12, 12)
-	floor.mesh = pm
-	var fmat := StandardMaterial3D.new()
-	fmat.albedo_color = Color(0.05, 0.05, 0.06)
-	fmat.roughness = 0.5
-	fmat.metallic = 0.1
-	floor.material_override = fmat
-	floor.position = Vector3(0, 0, 0)
-	add_child(floor)
+	# floor: radial pool of light fading to black (no horizon band) + real contact shadow
+	FaceExtras.make_floor(self)
+	FaceExtras.make_vignette(self)
 
 
 func _setup_lights() -> void:
@@ -163,7 +161,7 @@ func _setup_lights() -> void:
 
 	var rim := DirectionalLight3D.new()
 	rim.light_energy = 4.5
-	rim.light_specular = 1.0
+	rim.light_specular = 0.3   # was 1.0 — blue spec sparkled/hue-shifted the dark hair mass
 	rim.light_color = Color(0.42, 0.6, 1.0)
 	rim.rotation_degrees = Vector3(-12, 145, 0)
 	add_child(rim)
@@ -175,22 +173,23 @@ func _setup_lights() -> void:
 	fill.rotation_degrees = Vector3(8, 30, 0)
 	add_child(fill)
 
-	# hair/kicker from above-behind
+	# hair/kicker from above-behind (cut 2.6 → 1.5: kept hue-shifting the crown golden)
 	var hair := DirectionalLight3D.new()
-	hair.light_energy = 2.6
-	hair.light_specular = 0.6
+	hair.light_energy = 1.5
+	hair.light_specular = 0.3
 	hair.light_color = Color(1.0, 0.92, 0.8)
 	hair.rotation_degrees = Vector3(-72, -150, 0)
 	add_child(hair)
 
-	# eye catch-light: a small bright omni near the face for the wet eye spark
-	# (without it the eyes read dead). Repositioned each frame in _update_camera.
+	# eye catch-light: cull-masked to the EYE layer (2) so it can be bright for a wet
+	# spark WITHOUT flooding the neck/chin salmon. Repositioned each frame in _update_camera.
 	catch_light = OmniLight3D.new()
-	catch_light.light_energy = 0.1
+	catch_light.light_energy = 0.35
 	catch_light.light_specular = 1.0
 	catch_light.light_color = Color(1.0, 0.98, 0.95)
 	catch_light.omni_range = 0.9
 	catch_light.omni_attenuation = 2.6
+	catch_light.light_cull_mask = 1 << 1
 	catch_light.position = Vector3(0.1, 1.62, 0.6)
 	add_child(catch_light)
 
@@ -278,6 +277,9 @@ func _load_head_and_hair() -> void:
 				bshapes[String(mi.mesh.get_blend_shape_name(bi))] = bi
 		if mi.name.begins_with("Eye_"):
 			eye_nodes.append({"node": mi, "rest_basis": mi.transform.basis, "rest_pos": mi.position})
+			mi.layers = 1 | (1 << 1)   # EYE layer → the cull-masked catch-light hits eyes only
+			if mi.name.ends_with("_eyeball"):
+				FaceExtras.add_lid_ao(mi)   # lid-contact AO band (grounds the eyeball)
 		if mi.name.begins_with("LidUp"):
 			upper_lids.append({"node": mi, "rest_basis": mi.transform.basis})
 	print("[cine] face blendshapes=", bshapes.size(), " eye_nodes=", eye_nodes.size())
@@ -454,8 +456,12 @@ func _drive_face(t: float, delta: float) -> void:
 		face_mi.set_blend_shape_value(bshapes[n], 0.0)
 
 	# ── blink every ~3s via the real Eyes_Closed_Max FACS shape ──
+	# GATED during the 27-31s hero close-up: the one beat meant to sell the face must
+	# never catch the eyes shut (the old preview frame at 29.5s did exactly that).
 	var bt: float = fmod(tt + 0.6, 3.0)
 	var blink: float = (sin(bt / 0.16 * PI) if bt < 0.16 else 0.0)
+	if tt > 26.6:
+		blink = 0.0
 	_sshape("Eyes_Closed_Max", clampf(blink, 0.0, 1.0))
 
 	# ── expression arc ──
@@ -475,13 +481,21 @@ func _drive_face(t: float, delta: float) -> void:
 	_sshape("Eyebrows_Raised_Right", browflash)
 
 	# ── eye saccades: snap to a new gaze target every ~2s, hold; freeze while blinking ──
+	# During the hero close-up the gaze settles ON the camera (slightly up, no darting).
 	if blink < 0.4:
 		var k: int = int(tt / 2.0)
 		var target: Vector2 = Vector2(sin(float(k) * 12.9898) * 0.20, sin(float(k) * 4.1413) * 0.12)
+		target = target.lerp(Vector2.ZERO, closeup)   # hold eye contact in the close-up
 		_gaze = _gaze.lerp(target, clampf(delta * 16.0, 0.0, 1.0))   # fast saccade, then steady
-	var gaze_rot: Basis = Basis.from_euler(Vector3(_gaze.y, 0.0, -_gaze.x))
 	for e in eye_nodes:
+		var side: float = 1.0 if (e["rest_pos"] as Vector3).x > 0.0 else -1.0
+		var gaze_rot: Basis = Basis.from_euler(Vector3(
+			_gaze.y + GAZE_PITCH_BIAS, 0.0, -_gaze.x + GAZE_DIVERGE * side))
 		(e["node"] as MeshInstance3D).transform.basis = gaze_rot * (e["rest_basis"] as Basis)
+	# pupil dilation on the push-in (an "interest" cue; the L3 pupil morphs are not in the
+	# curated set, but the procedural iris exposes pupil_radius directly)
+	for em in eyeball_mats:
+		em.set_shader_parameter("pupil_radius", lerpf(0.10, 0.125, closeup))
 
 
 func _update_camera(t: float) -> void:
@@ -509,8 +523,8 @@ func _update_camera(t: float) -> void:
 	# pile onto a frame-filling face) — pull exposure + the hot lights down as we close in.
 	if env:
 		env.tonemap_exposure = lerpf(1.0, 0.70, closeness)
-	if catch_light:
-		catch_light.light_energy = 0.1
+	# (catch-light energy is constant now — it is cull-masked to the eyes, so it can
+	# stay bright in the close-up without flooding the neck)
 	if key_light:
 		key_light.light_energy = lerpf(3.4, 2.1, closeness)
 	if rim_light:
@@ -594,13 +608,14 @@ func _mat_eyeball() -> ShaderMaterial:
 	m.set_shader_parameter("eye_cell_scale", 19.0)
 	m.set_shader_parameter("eye_cell_jitter", 0.7)
 	m.set_shader_parameter("iris_pinch", 0.72)
-	m.set_shader_parameter("eyeball_roughness", 0.22)
-	m.set_shader_parameter("eyeball_specular", 0.7)
-	m.set_shader_parameter("sclera_shade", 0.55)
+	m.set_shader_parameter("eyeball_roughness", 0.07)
+	m.set_shader_parameter("eyeball_specular", 0.06)
+	m.set_shader_parameter("sclera_shade", 0.5)
 	m.set_shader_parameter("sclera_edge_tint", Color(0.80, 0.66, 0.60))
 	m.set_shader_parameter("rand_seed", 12345)
 	m.set_shader_parameter("uv1_scale", Vector3(1,1,1))
 	m.set_shader_parameter("uv1_offset", Vector3(0,0,0))
+	eyeball_mats.append(m)
 	return m
 
 func _mat_cornea() -> ShaderMaterial:
@@ -612,20 +627,20 @@ func _mat_cornea() -> ShaderMaterial:
 	return m
 
 func _mat_eyeshadow() -> StandardMaterial3D:
-	# a subtle touch of make-up on the cinematic character (soft tinted upper lid)
+	# eyeshadow OFF (audit: the magenta lid band read as a shading glitch, not makeup)
 	var m := StandardMaterial3D.new()
 	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	m.albedo_color = Color(0.32, 0.18, 0.27, 0.28)
+	m.albedo_color = Color(0.32, 0.18, 0.27, 0.0)
 	m.roughness = 0.6
 	m.cull_mode = BaseMaterial3D.CULL_DISABLED
 	return m
 
 
-func _mat_mouth() -> StandardMaterial3D:
-	var m := StandardMaterial3D.new()
-	m.albedo_texture = _tex("res://vit_mouth.png")
-	m.albedo_color = Color(0.85, 0.78, 0.76)
-	m.roughness = 0.42
+func _mat_mouth() -> ShaderMaterial:
+	# depth-darkened mouth bag — cavity falls to black behind the lip line (de-muppets)
+	var m := ShaderMaterial.new()
+	m.shader = load("res://scenes/mouth_interior.gdshader") as Shader
+	m.set_shader_parameter("tex_albedo", _tex("res://vit_mouth.png"))
 	return m
 
 func _mat_hair() -> ShaderMaterial:
@@ -645,12 +660,12 @@ func _mat_hair() -> ShaderMaterial:
 	m.set_shader_parameter("roughness_val", 0.90)     # matte → less ribbon sheen
 	m.set_shader_parameter("specular_val", 0.08)
 	m.set_shader_parameter("anisotropy_val", 0.08)
-	m.set_shader_parameter("tonal_variation", 0.7)
+	m.set_shader_parameter("tonal_variation", 0.45)
 	m.set_shader_parameter("clump_count", 40.0)
-	m.set_shader_parameter("tip_lighten", 0.2)
+	m.set_shader_parameter("tip_lighten", 0.18)
 	m.set_shader_parameter("emit", 0.13)
 	m.set_shader_parameter("backlight_color", Color(0.18, 0.10, 0.05, 1.0))
-	m.set_shader_parameter("backlight_strength", 0.45)
+	m.set_shader_parameter("backlight_strength", 0.35)
 	m.set_shader_parameter("density", 1.0)
 	m.set_shader_parameter("scissor", 0.10)            # carve finer strand gaps (de-ribbon)
 	return m

@@ -16,6 +16,7 @@ extends Node3D
 # run at --resolution 1280x1280 → writes <prefix>_a.png / _b.png then quits.
 # ──────────────────────────────────────────────────────────────────────────
 
+const FaceExtras = preload("res://scenes/face_extras.gd")
 const HEAD_GLB: String = "res://vitruvian_head.glb"
 # Hair Tool cards (real authored cards + baked strand atlas) replace the old
 # flat-card hair that read as a dark helmet. Old GLB kept for reference/revert.
@@ -86,6 +87,10 @@ var _morph_deltas: Dictionary = {}  # shape name -> PackedVector3Array delta
 var _morph_mat: Material
 var _morph_key: String = "_init_"
 var _gaze: Vector2 = Vector2.ZERO
+# resting-gaze correction (audit: gaze sat slightly down + inward = doll stare).
+# Calibrated via GAZE_TUNE + EYE_SHOT captures; euler x = vertical, z = horizontal.
+const GAZE_PITCH_BIAS: float = 0.05    # lift gaze up to camera height
+const GAZE_DIVERGE: float = 0.012      # rotate each eye slightly OUTWARD (un-cross)
 var _face_mode: String = "auto"                # auto | neutral | smile | surprise | frown | blink
 var _expr_buttons: Dictionary = {}
 
@@ -196,6 +201,8 @@ func _ready() -> void:
 	DirAccess.make_dir_recursive_absolute(_out_dir)
 	_setup_environment()
 	_setup_backdrop()
+	FaceExtras.make_floor(self)        # soft pool-of-light ground (no grey void / horizon)
+	FaceExtras.make_vignette(self)
 	_setup_lights()
 	_setup_camera()
 	_character = Node3D.new()
@@ -412,17 +419,17 @@ func _setup_lights() -> void:
 	rim_light = DirectionalLight3D.new()
 	rim_light.name = "RimLight"
 	rim_light.light_energy = 1.9
-	rim_light.light_specular = 0.4
+	rim_light.light_specular = 0.25   # lower spec: the blue rim was sparkling the dark hair
 	rim_light.light_color = Color(0.40, 0.62, 1.0)
 	_apply_light_rot(rim_light, rim_pitch, rim_yaw)
 	add_child(rim_light)
 
 	# Hair/kicker light from above-behind: rakes the crown so the (otherwise
 	# unlit, side-keyed) top hair catches a sheen and the combed strand flow reads.
-	# High specular + the cards' anisotropy = a strand-flow highlight band on top.
+	# Energy CUT 3.2 → 1.5: at 3.2 it hue-shifted the whole side mass golden in profile.
 	hair_light = DirectionalLight3D.new()
 	hair_light.name = "HairLight"
-	hair_light.light_energy = 3.2
+	hair_light.light_energy = 1.5
 	hair_light.light_specular = 0.1
 	hair_light.light_color = Color(1.0, 0.94, 0.82)
 	_apply_light_rot(hair_light, hair_light_pitch, hair_light_yaw)
@@ -437,11 +444,12 @@ func _setup_lights() -> void:
 
 	catch_light = OmniLight3D.new()
 	catch_light.name = "CatchLight"
-	catch_light.light_energy = 0.1 # subtle eye-spark (user pref; saved CATCH=0.1)
-	catch_light.light_specular = 1.0
+	catch_light.light_energy = 0.35 # eye-spark only: cull-masked to the EYE layer (2), so
+	catch_light.light_specular = 1.0 # it can be bright without flooding the neck/chin salmon
 	catch_light.light_color = Color(1.0, 0.98, 0.95)
-	catch_light.omni_range = 0.9                # localized to the face so it's a spark, not a fill
+	catch_light.omni_range = 0.9
 	catch_light.omni_attenuation = 2.6
+	catch_light.light_cull_mask = 1 << 1        # ONLY layer 2 — the eyeball/cornea meshes
 	catch_light.position = Vector3(0.22, 1.78, 0.45)
 	add_child(catch_light)
 
@@ -535,6 +543,9 @@ func _load_and_wire() -> bool:
 				bshapes[String(mi.mesh.get_blend_shape_name(bi))] = bi
 		if mi.name.begins_with("Eye_"):
 			eye_nodes.append({"node": mi, "rest_basis": mi.transform.basis, "rest_pos": mi.position})
+			mi.layers = 1 | (1 << 1)   # also on the EYE layer → catch-light spark hits eyes only
+			if mi.name.ends_with("_eyeball"):
+				FaceExtras.add_lid_ao(mi)   # lid-contact AO band (grounds the eyeball)
 		if mi.name.begins_with("LidUp"):
 			upper_lids.append({"node": mi, "rest_basis": mi.transform.basis})
 
@@ -754,15 +765,37 @@ func _drive_face(delta: float) -> void:
 		var k: int = int(_time / 2.0)
 		var target: Vector2 = Vector2(sin(float(k) * 12.9898) * 0.22, sin(float(k) * 4.1413) * 0.13)
 		_gaze = _gaze.lerp(target, clampf(delta * 16.0, 0.0, 1.0))
-		var gr: Basis = Basis.from_euler(Vector3(_gaze.y, 0.0, -_gaze.x))
-		if not OS.has_environment("NO_SACCADE"):
-			for e in eye_nodes:
-				(e["node"] as MeshInstance3D).transform.basis = gr * (e["rest_basis"] as Basis)
+	# resting-gaze bias (lift to camera height; the tuned look stared down/inward) +
+	# per-eye DIVERGENCE (un-cross). Applied even when saccades are frozen so
+	# NO_SACCADE / FACE_FORCE captures show the corrected rest gaze.
+	if eye_nodes.size() > 0:
+		var pitch_bias: float = GAZE_PITCH_BIAS
+		var diverge: float = GAZE_DIVERGE
+		if OS.has_environment("GAZE_TUNE"):   # calibration hook: GAZE_TUNE="<pitch>,<diverge>"
+			var parts: PackedStringArray = OS.get_environment("GAZE_TUNE").split(",")
+			if parts.size() >= 1: pitch_bias = float(parts[0])
+			if parts.size() >= 2: diverge = float(parts[1])
+		var g: Vector2 = Vector2.ZERO if OS.has_environment("NO_SACCADE") else _gaze
+		for e in eye_nodes:
+			var side: float = 1.0 if (e["rest_pos"] as Vector3).x > 0.0 else -1.0
+			var gr: Basis = Basis.from_euler(Vector3(g.y + pitch_bias, 0.0, -g.x + diverge * side))
+			(e["node"] as MeshInstance3D).transform.basis = gr * (e["rest_basis"] as Basis)
 
 
 # ── one-click lighting presets ───────────────────────────────────────────────
 func _apply_light_preset(name: String) -> void:
 	match name:
+		"Hero":
+			# authored hero look: soft motivated warm key with wrap, cool rim from
+			# behind-left, NEGATIVE fill (near-black shadow side), restrained kicker.
+			key_light.light_energy = 2.7; key_light.light_color = Color(1.0, 0.93, 0.84)
+			key_yaw = -58.0; key_pitch = -26.0
+			fill_light.light_energy = 0.22; fill_light.light_color = Color(0.62, 0.70, 0.86)
+			fill_yaw = 38.0; fill_pitch = 8.0
+			rim_light.light_energy = 2.3; rim_light.light_color = Color(0.55, 0.70, 1.0)
+			rim_yaw = 138.0; rim_pitch = -32.0
+			hair_light.light_energy = 1.5
+			env.ambient_light_energy = 0.14; env.tonemap_exposure = 1.0
 		"Portrait":
 			key_light.light_energy = 3.2; key_light.light_color = Color(1.0, 0.90, 0.76)
 			key_yaw = -81.0; key_pitch = -30.0
@@ -770,7 +803,7 @@ func _apply_light_preset(name: String) -> void:
 			fill_yaw = 21.0; fill_pitch = 13.0
 			rim_light.light_energy = 1.9; rim_light.light_color = Color(0.40, 0.62, 1.0)
 			rim_yaw = 51.0; rim_pitch = -45.0
-			hair_light.light_energy = 3.2
+			hair_light.light_energy = 1.5
 			env.ambient_light_energy = 0.10; env.tonemap_exposure = 1.0
 		"Studio":
 			key_light.light_energy = 2.4; key_light.light_color = Color(1.0, 0.98, 0.95)
@@ -883,15 +916,15 @@ func _make_eyeball() -> ShaderMaterial:
 	mat.set_shader_parameter("iris_radius", 0.32)
 	mat.set_shader_parameter("iris_margin", 0.018)
 	mat.set_shader_parameter("pupil_radius", 0.10)
-	mat.set_shader_parameter("eye_white", Color(0.80, 0.75, 0.69))   # warm off-white sclera (not pure white)
+	mat.set_shader_parameter("eye_white", Color(0.86, 0.83, 0.80))   # warm off-white sclera (not pure white)
 	mat.set_shader_parameter("pupil_color", Color(0.012, 0.010, 0.014))
 	mat.set_shader_parameter("texture_iris_color", _iris_ramp())
 	mat.set_shader_parameter("eye_cell_scale", 19.0)
 	mat.set_shader_parameter("eye_cell_jitter", 0.7)
 	mat.set_shader_parameter("iris_pinch", 0.72)
-	mat.set_shader_parameter("eyeball_roughness", 0.22)
-	mat.set_shader_parameter("eyeball_specular", 0.7)
-	mat.set_shader_parameter("sclera_shade", 0.55)
+	mat.set_shader_parameter("eyeball_roughness", 0.07)
+	mat.set_shader_parameter("eyeball_specular", 0.06)
+	mat.set_shader_parameter("sclera_shade", 0.5)
 	mat.set_shader_parameter("sclera_edge_tint", Color(0.80, 0.66, 0.60))
 	mat.set_shader_parameter("rand_seed", 12345)
 	mat.set_shader_parameter("uv1_scale", Vector3(1, 1, 1))
@@ -911,12 +944,12 @@ func _make_cornea() -> ShaderMaterial:
 	return mat
 
 
-func _make_mouth() -> StandardMaterial3D:
-	var m: StandardMaterial3D = StandardMaterial3D.new()
-	m.albedo_texture = _tex("res://vit_mouth.png")
-	m.albedo_color = Color(0.85, 0.78, 0.76)
-	m.roughness = 0.42
-	m.metallic = 0.0
+func _make_mouth() -> ShaderMaterial:
+	# Depth-darkened mouth bag (cavity falls to black behind the lip line) — the old
+	# evenly-lit StandardMaterial read "muppet": bright cavity, slab tongue, denture ring.
+	var m: ShaderMaterial = ShaderMaterial.new()
+	m.shader = load("res://scenes/mouth_interior.gdshader") as Shader
+	m.set_shader_parameter("tex_albedo", _tex("res://vit_mouth.png"))
 	return m
 
 
@@ -1015,20 +1048,20 @@ func _make_hair() -> ShaderMaterial:
 		vit_hair_mat.set_shader_parameter("tex_opacity", _tex("res://vit_hair_opacity.png"))
 		vit_hair_mat.set_shader_parameter("root_color", Color(0.34, 0.24, 0.15, 1.0))
 		vit_hair_mat.set_shader_parameter("tip_color", Color(0.66, 0.52, 0.36, 1.0))   # lighter tips = depth
-		vit_hair_mat.set_shader_parameter("brightness", 3.6)
+		vit_hair_mat.set_shader_parameter("brightness", 3.4)
 		vit_hair_mat.set_shader_parameter("diffuse_mix", 1.0)
-		vit_hair_mat.set_shader_parameter("normal_strength", 0.9)   # strand relief (AtC edges now soft, so safe)
+		vit_hair_mat.set_shader_parameter("normal_strength", 0.8)   # strand relief (AtC edges now soft, so safe)
 		vit_hair_mat.set_shader_parameter("flip_green", false)
 		vit_hair_mat.set_shader_parameter("ao_strength", 0.7)
-		vit_hair_mat.set_shader_parameter("roughness_val", 0.80)
-		vit_hair_mat.set_shader_parameter("specular_val", 0.14)
-		vit_hair_mat.set_shader_parameter("anisotropy_val", 0.45)   # strand-flow highlight band = the key 'hair' cue
-		vit_hair_mat.set_shader_parameter("tonal_variation", 0.55)
+		vit_hair_mat.set_shader_parameter("roughness_val", 0.84)
+		vit_hair_mat.set_shader_parameter("specular_val", 0.12)
+		vit_hair_mat.set_shader_parameter("anisotropy_val", 0.30)   # strand-flow highlight band = the key 'hair' cue
+		vit_hair_mat.set_shader_parameter("tonal_variation", 0.45)
 		vit_hair_mat.set_shader_parameter("clump_count", 55.0)
-		vit_hair_mat.set_shader_parameter("tip_lighten", 0.3)
-		vit_hair_mat.set_shader_parameter("emit", 0.2)             # lift the shadow side off black
+		vit_hair_mat.set_shader_parameter("tip_lighten", 0.18)
+		vit_hair_mat.set_shader_parameter("emit", 0.13)             # lift the shadow side off black
 		vit_hair_mat.set_shader_parameter("backlight_color", Color(0.30, 0.17, 0.08, 1.0))
-		vit_hair_mat.set_shader_parameter("backlight_strength", 0.6)  # light through hair = depth
+		vit_hair_mat.set_shader_parameter("backlight_strength", 0.35)  # light through hair = depth
 		vit_hair_mat.set_shader_parameter("density", 1.0)
 		vit_hair_mat.set_shader_parameter("scissor", 0.10)          # carve much finer strand gaps (de-ribbon)
 	return vit_hair_mat
@@ -1315,7 +1348,7 @@ func _build_ui() -> void:
 	var lp_grid: GridContainer = GridContainer.new()
 	lp_grid.columns = 2
 	vb.add_child(lp_grid)
-	for lp in ["Portrait", "Studio", "Dramatic", "Backlit"]:
+	for lp in ["Hero", "Portrait", "Studio", "Dramatic", "Backlit"]:
 		var lb: Button = Button.new()
 		lb.text = lp
 		lb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -1388,29 +1421,29 @@ func _build_ui() -> void:
 	_mkcolor(vb, "hair_tip_color", "tip colour", Color(0.62, 0.50, 0.36), _hair_set_c("tip_color"))
 	_mkslider(vb, "hair_brightness", "brightness", 0.0, 8.0, 0.01, 3.4, _hair_set("brightness"))
 	_mkslider(vb, "hair_diffuse_mix", "use baked texture", 0.0, 1.0, 0.01, 1.0, _hair_set("diffuse_mix"))
-	_mkslider(vb, "hair_tonal", "lock-to-lock variation", 0.0, 1.0, 0.01, 0.7, _hair_set("tonal_variation"))
+	_mkslider(vb, "hair_tonal", "lock-to-lock variation", 0.0, 1.0, 0.01, 0.45, _hair_set("tonal_variation"))
 	_mkslider(vb, "hair_clumps", "variation clump count", 4.0, 80.0, 1.0, 28.0, _hair_set("clump_count"))
 	_mkslider(vb, "hair_tip_lighten", "tip lighten", 0.0, 1.0, 0.01, 0.18, _hair_set("tip_lighten"))
 
 	_hdr(vb, "Hair — shape / coverage")
 	_mkslider(vb, "hair_density", "density (fuller→wispier)", 0.2, 3.0, 0.01, 1.0, _hair_set("density"))
 	_mkslider(vb, "hair_scissor", "cutout threshold", 0.0, 0.95, 0.005, 0.12, _hair_set("scissor"))
-	_mkslider(vb, "hair_normal", "normal strength", 0.0, 4.0, 0.01, 1.0, _hair_set("normal_strength"))
+	_mkslider(vb, "hair_normal", "normal strength", 0.0, 4.0, 0.01, 0.8, _hair_set("normal_strength"))
 	_mkcheck(vb, "hair_flip_green", "flip normal green", false, _hair_set_b("flip_green"))
 
 	_hdr(vb, "Hair — shading")
-	_mkslider(vb, "hair_rough", "roughness", 0.0, 1.0, 0.01, 0.76, _hair_set("roughness_val"))
-	_mkslider(vb, "hair_spec", "specular", 0.0, 1.0, 0.01, 0.25, _hair_set("specular_val"))
-	_mkslider(vb, "hair_aniso", "anisotropy (strand sheen)", -1.0, 1.0, 0.01, 0.4, _hair_set("anisotropy_val"))
+	_mkslider(vb, "hair_rough", "roughness", 0.0, 1.0, 0.01, 0.84, _hair_set("roughness_val"))
+	_mkslider(vb, "hair_spec", "specular", 0.0, 1.0, 0.01, 0.12, _hair_set("specular_val"))
+	_mkslider(vb, "hair_aniso", "anisotropy (strand sheen)", -1.0, 1.0, 0.01, 0.3, _hair_set("anisotropy_val"))
 	_mkslider(vb, "hair_ao", "AO strength", 0.0, 1.0, 0.01, 0.6, _hair_set("ao_strength"))
-	_mkslider(vb, "hair_emit", "shadow lift (emission)", 0.0, 1.0, 0.01, 0.15, _hair_set("emit"))
+	_mkslider(vb, "hair_emit", "shadow lift (emission)", 0.0, 1.0, 0.01, 0.13, _hair_set("emit"))
 	_mkcolor(vb, "hair_backlight_color", "backlight tint", Color(0.18, 0.10, 0.05), _hair_set_c("backlight_color"))
-	_mkslider(vb, "hair_backlight", "backlight (light-thru)", 0.0, 1.0, 0.01, 0.0, _hair_set("backlight_strength"))
+	_mkslider(vb, "hair_backlight", "backlight (light-thru)", 0.0, 1.0, 0.01, 0.35, _hair_set("backlight_strength"))
 	_mkcolor(vb, "scalp_color", "scalp base colour", Color(0.05, 0.035, 0.024), func(c): if vit_scalp_mat: vit_scalp_mat.set_shader_parameter("hair_color", c))
 
 	# ── HAIR / KICKER LIGHT ──
 	_hdr(vb, "Hair light (kicker)")
-	_mkslider(vb, "hairlight_energy", "energy", 0.0, 8.0, 0.01, 3.2, func(v): hair_light.light_energy = v)
+	_mkslider(vb, "hairlight_energy", "energy", 0.0, 8.0, 0.01, 1.5, func(v): hair_light.light_energy = v)
 	_mkcolor(vb, "hairlight_color", "color", Color("ffefd1"), func(c): hair_light.light_color = c)
 	_mkslider(vb, "hairlight_spec", "specular", 0.0, 1.0, 0.01, 0.1, func(v): hair_light.light_specular = v)
 	_mkslider(vb, "hairlight_yaw", "yaw", -180.0, 180.0, 1.0, hair_light_yaw, func(v): hair_light_yaw = v; _apply_light_rot(hair_light, hair_light_pitch, hair_light_yaw))
@@ -1443,10 +1476,10 @@ func _build_ui() -> void:
 
 	_hdr(vb, "Eyes — sclera & surface")
 	_mkcolor(vb, "eye_white", "sclera (white)", Color(0.86, 0.83, 0.80), _eye_set_c("eye_white"))
-	_mkslider(vb, "eye_sclera_shade", "sclera shading", 0.0, 1.0, 0.01, 0.55, _eye_set("sclera_shade"))
+	_mkslider(vb, "eye_sclera_shade", "sclera shading", 0.0, 1.0, 0.01, 0.5, _eye_set("sclera_shade"))
 	_mkcolor(vb, "eye_sclera_tint", "sclera edge tint", Color(0.80, 0.66, 0.60), _eye_set_c("sclera_edge_tint"))
-	_mkslider(vb, "eye_rough", "eyeball roughness", 0.0, 1.0, 0.01, 0.22, _eye_set("eyeball_roughness"))
-	_mkslider(vb, "eye_spec", "eyeball specular", 0.0, 1.0, 0.01, 0.7, _eye_set("eyeball_specular"))
+	_mkslider(vb, "eye_rough", "eyeball roughness", 0.0, 1.0, 0.01, 0.07, _eye_set("eyeball_roughness"))
+	_mkslider(vb, "eye_spec", "eyeball specular", 0.0, 1.0, 0.01, 0.06, _eye_set("eyeball_specular"))
 
 	_hdr(vb, "Eyes — cornea (wet shell)")
 	_mkslider(vb, "cornea_shininess", "shininess", 0.0, 800.0, 1.0, 480.0, _cornea_set("shininess"))

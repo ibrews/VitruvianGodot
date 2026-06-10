@@ -51,7 +51,11 @@ def clip_over_face(strands):
         for p in st:
             x, y, zz = float(p[0]), float(p[1]), float(p[2])
             over_face = (abs(x) < 0.072) and (y < -0.030) and (1.30 < zz < 1.665)
-            if over_face:
+            # GRACE for the first 3 points: strands ROOTED at the front hairline start
+            # inside the face box and were dropped ENTIRELY (len<2), leaving the bald
+            # front wedge at the part (the #1 audit tell). Keeping a short stub covers
+            # the front scalp like a combed-back fringe without draping over the face.
+            if over_face and len(keep) >= 3:
                 break          # stop the strand at the hairline / face boundary
             keep.append(p)
         if len(keep) >= 2:
@@ -237,6 +241,111 @@ def clip_length(strands, z_floor):
             out.append(np.array(keep))
     return out
 
+def part_fill(strands, n_extra=900, seed=11):
+    # BABY-HAIR fill along the centre parting. The part opened into a bald wedge
+    # (lift_front + clip_over_face thin the front-centre roots — the #1 audit tell).
+    # Clone SHORT fine versions of nearby top strands, re-rooted tight along the part
+    # line (|x|≈0), keeping each donor's natural left/right flow → fine hairs that
+    # close the gap the way real baby hair does along a parting.
+    rng = np.random.RandomState(seed)
+    donors = [st for st in strands if abs(st[0][0]) < 0.035 and st[0][2] >= 1.615]
+    if not donors:
+        return []
+    out = []
+    for _ in range(n_extra):
+        st = donors[rng.randint(len(donors))]
+        m = max(3, int(len(st) * rng.uniform(0.25, 0.5)))   # short baby strands
+        root = st[0]
+        dx = rng.uniform(-0.007, 0.007) - root[0]           # pull the root onto the part line
+        dy = rng.uniform(-0.014, 0.012)                     # scatter along the parting
+        dz = rng.uniform(-0.003, 0.003)
+        out.append(st[:m] + np.array([dx, dy, dz]))
+    return out
+
+
+def build_scalp_dome(strands, mat, name="VitScalpDome"):
+    # DARK SCALP BASE under the cards: where the part opens (or back-lock gaps show),
+    # the viewer should see hair-dark shadow, NOT bright skin (the "wig glued on wrong"
+    # tell). Build a dome hugging the strand ROOTS: per angular bin, radius = median
+    # root distance + 0.8mm (just proud of the skin, still under the pushed-out cards).
+    # Bins with <2 roots are dropped → the dome exists ONLY under haired regions (it can
+    # never creep onto the forehead). UVs sit in the dense root band of the strand atlas
+    # so the hairtool_card shader shades it as near-opaque dark root hair.
+    hc = np.array([HEAD_C[0], HEAD_C[1], HEAD_C[2]])
+    NB_AZ, NB_EL = 28, 14
+    EL_LO = math.radians(-15.0)
+    EL_SPAN = math.radians(105.0)
+    bins = {}
+    for st in strands:
+        r = np.array(st[0], float) - hc
+        d = float(np.linalg.norm(r))
+        if d < 1e-6:
+            continue
+        el = math.asin(max(-1.0, min(1.0, r[2] / d)))
+        if el < EL_LO:
+            continue
+        az = math.atan2(r[1], r[0])
+        ia = int((az + math.pi) / (2 * math.pi) * NB_AZ) % NB_AZ
+        ie = min(int((el - EL_LO) / EL_SPAN * NB_EL), NB_EL - 1)
+        bins.setdefault((ia, ie), []).append(d)
+    rad = {k: float(np.median(v)) + 0.0008 for k, v in bins.items() if len(v) >= 2}
+
+    def corner_r(ia, ie):
+        adj = [rad.get(((ia + da) % NB_AZ, ie + de)) for da in (-1, 0) for de in (-1, 0)]
+        adj = [a for a in adj if a is not None]
+        return sum(adj) / len(adj) if adj else None
+
+    def corner_dir(ia, ie):
+        az = -math.pi + 2 * math.pi * ia / NB_AZ
+        el = EL_LO + EL_SPAN * ie / NB_EL
+        return np.array([math.cos(az) * math.cos(el), math.sin(az) * math.cos(el), math.sin(el)])
+
+    bm = bmesh.new()
+    uvl = bm.loops.layers.uv.new("UVMap")
+    vcache = {}
+
+    def vert(ia, ie):
+        key = (ia % NB_AZ, ie)
+        if key in vcache:
+            return vcache[key]
+        rr = corner_r(key[0], ie)
+        if rr is None:
+            return None
+        v = bm.verts.new(hc + corner_dir(key[0], ie) * rr)
+        vcache[key] = v
+        return v
+
+    nfaces = 0
+    for (ia, ie) in rad:
+        cs = [vert(ia, ie), vert(ia + 1, ie), vert(ia + 1, ie + 1), vert(ia, ie + 1)]
+        if any(c is None for c in cs):
+            continue
+        try:
+            f = bm.faces.new(cs)
+        except ValueError:
+            continue
+        u0 = (ia % NCOLS) / NCOLS + 0.03
+        for li, loop in enumerate(f.loops):
+            loop[uvl].uv = (u0 + (0.0 if li in (0, 3) else 0.19),
+                            0.91 if li in (0, 1) else 0.985)
+        nfaces += 1
+    # wind every face OUTWARD (lighting; the card shader is cull_disabled anyway)
+    bm.normal_update()
+    for f in bm.faces:
+        c = np.array(f.calc_center_median()) - hc
+        if float(np.dot(c, np.array(f.normal))) < 0.0:
+            f.normal_flip()
+    me = bpy.data.meshes.new(name)
+    bm.normal_update()
+    bm.to_mesh(me)
+    bm.free()
+    me.materials.append(mat)
+    obj = bpy.data.objects.new(name, me)
+    bpy.context.scene.collection.objects.link(obj)
+    print("[hair] %s: faces=%d bins=%d" % (name, nfaces, len(rad)))
+    return obj
+
+
 def lift_front(strands, push=0.007):
     # push the FRONT-HAIRLINE strands (forehead roots) OUTWARD off the face so the cards
     # sit on top of the forehead skin instead of clipping THROUGH it (which let the bright
@@ -257,13 +366,29 @@ _hair_strands = clip_length(_hair_strands, 1.50)        # jaw-length bob (clears
 _hair_strands = _hair_strands + crown_fill(_hair_strands, n_extra=1100)
 _hair_strands = make_children(_hair_strands, k=12, root_spread=0.0050, tip_spread=0.012)  # denser → less polygonal
 _hair_strands = add_crown_volume(_hair_strands, amount=0.005)   # gentle (high volume = crown sticks up)
-_hair_strands = lift_front(_hair_strands, push=0.014)   # lift forehead hair well off the face skin
-print("[hair] total %d strands (Eve + crown_fill + children + volume)" % len(_hair_strands))
+# push REDUCED 0.014 → 0.009: big enough that front cards clear the forehead skin
+# (no poke-through speckles), small enough not to tear the part open into a wedge
+_hair_strands = lift_front(_hair_strands, push=0.009)
+_baby_strands = part_fill(_hair_strands, n_extra=900)   # baby-hair fill along the parting
+print("[hair] total %d strands (+%d part baby hairs)" % (len(_hair_strands), len(_baby_strands)))
 # REGROOM: more, thinner, finer-tipped cards. Wisps applied ONLY to the long hanging
 # locks (build_cards gates on tip height) so the length tapers to fine wisps while the
 # crown stays a smooth capped dome — fuller silhouette, no spiky flyaways.
 hair = build_cards(_hair_strands, stride=1,
                    w_root=0.0030, w_tip=0.0004, roll_max=0.95, name="VitHair", wisp_ext=0.30)
+baby = build_cards(_baby_strands, stride=1,
+                   w_root=0.0014, w_tip=0.0003, roll_max=0.9, name="VitBabyHair")
+dome = build_scalp_dome(_hair_strands, hair.data.materials[0])
+# merge baby hairs + dark scalp dome INTO the hair mesh (one mesh, one material):
+# the spring-rig script keeps only the largest mesh, and Godot wires one hair material.
+for o in (baby, dome):
+    o.data.materials.clear()
+    o.data.materials.append(hair.data.materials[0])
+bpy.ops.object.select_all(action='DESELECT')
+for o in (hair, baby, dome):
+    o.select_set(True)
+bpy.context.view_layer.objects.active = hair
+bpy.ops.object.join()
 brows = build_cards(load_strands("mind_eyebrows_11_Default.npz", 1), stride=4,
                     w_root=0.0016, w_tip=0.0006, roll_max=0.30, name="VitBrowCards")
 

@@ -18,6 +18,9 @@ uniform sampler2D texture_albedo : source_color, filter_linear_mipmap, repeat_en
 
 group_uniforms roughness;
 uniform float roughness : hint_range(0.0, 1.0) = 0.4;
+// FIX (white-speckle/glitter): hard floor so a mis-tuned roughness of ~0 can never
+// produce mirror-sharp GGX fireflies (specular aliasing = white dots) on skin.
+uniform float roughness_floor : hint_range(0.0, 1.0) = 0.28;
 uniform float specular : hint_range(0.0, 1.0, 0.01) = 0.5;
 uniform bool double_specularity = true;
 
@@ -168,7 +171,7 @@ void fragment() {
 
 	vec4 roughness_texture_channel = vec4(0.0, 1.0, 0.0, 0.0);
 	float roughness_tex = dot(texture(texture_roughness, base_uv), roughness_texture_channel);
-	ROUGHNESS = clamp(roughness_tex * roughness, 0.,1.);
+	ROUGHNESS = clamp(max(roughness_tex * roughness, roughness_floor), 0.,1.);
 
 	// Normal Map: Enabled
 	vec3 micro_normal = mix(vec3(.5,.5,1.), vec3(micro_detail.xy, 1.), micro_normal_strength);
