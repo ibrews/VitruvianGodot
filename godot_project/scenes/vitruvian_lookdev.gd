@@ -706,10 +706,13 @@ func _find_class(node: Node, cls: String) -> Node:
 const FACE_POSES: Dictionary = {
 	"neutral": {},
 	"smile": {"Happy": 0.85},
-	"surprise": {"Mouth_Large_Opened": 0.5, "Eyebrows_Raised_Left": 1.0, "Eyebrows_Raised_Right": 1.0, "Eyes_Opened_Max_Left": 0.9, "Eyes_Opened_Max_Right": 0.9},
+	# surprise: mouth drop 0.5 → 0.3 — at 0.5 the full teeth ring bared and it read
+	# GRIMACE; a softer "oh" + raised brows + wide eyes reads startled, not pained
+	"surprise": {"Mouth_Large_Opened": 0.3, "Eyebrows_Raised_Left": 1.0, "Eyebrows_Raised_Right": 1.0, "Eyes_Opened_Max_Left": 0.9, "Eyes_Opened_Max_Right": 0.9},
 	"jawopen": {"Mouth_Large_Opened": 1.0},
 	"talk": {"Mouth_Large_Opened": 0.4, "Lips_Up_Funnel": 0.3},
-	"frown": {"Sad": 0.9},
+	# sad: amplitude up + heavy lids — Sad 0.9 alone was indistinguishable from neutral
+	"frown": {"Sad": 1.0, "Eyes_Closed_Max": 0.22},
 	"angry": {"Angry": 1.0},
 	"blink": {"Eyes_Closed_Max": 1.0},
 }
@@ -750,7 +753,8 @@ func _drive_face(delta: float) -> void:
 	if _face_mode == "auto":
 		var bt: float = fmod(_time + 0.6, 3.2)
 		blink_amt = sin(bt / 0.16 * PI) if bt < 0.16 else 0.0   # a blink every ~3s (Eyes_Closed_Max)
-		_sshape("Happy", 0.30)                                  # gentle resting smile
+		_sshape("Smile_Lips_Closed", 0.45)                      # gentle resting smile (no teeth)
+		_sshape("Happy", 0.10)
 		_sshape("Eyes_Closed_Max", clampf(blink_amt, 0.0, 1.0))
 		if blink_amt > 0.4: saccade = false
 	else:
