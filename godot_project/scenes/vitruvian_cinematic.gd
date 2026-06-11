@@ -247,6 +247,7 @@ func _load_body() -> void:
 				match nm:
 					"VitShirt": mi.set_surface_override_material(si, _mat_shirt())
 					"VitPants": mi.set_surface_override_material(si, _mat_pants())
+					"VitShoes": mi.set_surface_override_material(si, _mat_shoes())
 					_:          mi.set_surface_override_material(si, _mat_body_skin())
 	# loop anims forever; NORMAL playback (manual seek doesn't update the skin in
 	# headless). Determinism comes from Movie Maker's fixed timestep (--write-movie
@@ -856,6 +857,12 @@ func _mat_shirt() -> StandardMaterial3D:
 	m.uv1_triplanar = true
 	m.uv1_scale = Vector3(26, 26, 26)
 	m.cull_mode = BaseMaterial3D.CULL_DISABLED   # collar notch = culled inner side
+	return m
+
+func _mat_shoes() -> StandardMaterial3D:
+	var m := StandardMaterial3D.new()
+	m.albedo_color = Color(0.07, 0.06, 0.06)
+	m.roughness = 0.5
 	return m
 
 func _mat_pants() -> StandardMaterial3D:

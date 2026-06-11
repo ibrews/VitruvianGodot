@@ -234,6 +234,48 @@ try:
             d.uv = ((u - math.floor(u) + col) * 0.5, (v - math.floor(v) + row) * 0.5)
         log("body UVs remapped to 2x2 atlas (tiles 1001-1004)")
 
+        # ---- SHOES: simple dark flats from the foot skin (audit: barefoot = asset-store).
+        # Faces below the ankle get a VitShoes material; the foot region puffs out 1.5mm
+        # along its normals (fading to 0 at the ankle) so the flat reads as a thin shoe
+        # shell, not painted skin. Follows the rig/walk for free.
+        import numpy as _np
+        me.materials.append(bpy.data.materials.new("VitShoes"))
+        shoe_idx=len(me.materials)-1
+        ANKLE_Z=0.062
+        sbm2=bmesh.new(); sbm2.from_mesh(me); sbm2.normal_update(); sbm2.verts.ensure_lookup_table()
+        nshoe=0
+        for f in sbm2.faces:
+            if f.calc_center_median().z < ANKLE_Z:
+                f.material_index=shoe_idx; nshoe+=1
+        # MELT the toes: Laplacian-smooth the shoe-region POSITIONS so the foot becomes
+        # a single shoe form (deep toe creases survive any amount of pure inflation),
+        # then inflate along smoothed normals. Smoothing fades to 0 at the ankle lip.
+        sverts=[v for v in sbm2.verts if v.co.z < ANKLE_Z + 0.002]
+        for _ in range(14):
+            disp={}
+            for v in sverts:
+                if not v.link_edges: continue
+                avgp=Vector((0,0,0))
+                for e in v.link_edges: avgp += e.other_vert(v).co
+                avgp /= len(v.link_edges)
+                wsm=min(1.0,(ANKLE_Z+0.002-v.co.z)/0.018)   # full melt below ~0.046
+                disp[v]= (avgp - v.co) * 0.5 * wsm
+            for v,dv in disp.items(): v.co += dv
+        sbm2.normal_update()
+        nrm2=_np.array([tuple(v.normal) for v in sbm2.verts])
+        nbrs2=[[e.other_vert(v).index for e in v.link_edges] for v in sbm2.verts]
+        for _ in range(10):
+            avg2=_np.array([nrm2[nb].mean(axis=0) if nb else nrm2[i] for i,nb in enumerate(nbrs2)])
+            nrm2=0.5*nrm2+0.5*avg2
+            nrm2/=_np.clip(_np.linalg.norm(nrm2,axis=1,keepdims=True),1e-9,None)
+        for i,v in enumerate(sbm2.verts):
+            if v.co.z < ANKLE_Z + 0.004:
+                w=min(1.0,(ANKLE_Z+0.004-v.co.z)/0.03)             # fade at the ankle lip
+                amt=0.0015 + 0.0025*min(1.0,max(0.0,(0.035-v.co.z)/0.03))  # toes swell most
+                v.co += Vector((nrm2[i][0],nrm2[i][1],nrm2[i][2]))*amt*w
+        sbm2.to_mesh(me); sbm2.free(); me.update()
+        log("shoes: faces",nshoe,"(toe-merged inflation)")
+
         # INFLATE the shirt (push verts out along SMOOTHED normals) so it sits proud of the
         # skin and hides any poke-through. Raw per-vert normals made the shoulder seams
         # inflate into POINTY SPIKES (audit #5/Tier-1 #10): at a hard seam/crease the normal

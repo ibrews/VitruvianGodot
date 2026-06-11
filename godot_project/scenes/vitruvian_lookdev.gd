@@ -499,6 +499,7 @@ func _load_and_wire() -> bool:
 					match bnm:
 						"VitShirt": bmi.set_surface_override_material(s, _make_shirt())
 						"VitPants": bmi.set_surface_override_material(s, _make_pants())
+						"VitShoes": bmi.set_surface_override_material(s, _make_shoes())
 						_:          bmi.set_surface_override_material(s, _make_body_skin())
 			if anim:
 				for a in anim.get_animation_list():
@@ -1043,6 +1044,14 @@ func _make_shirt() -> StandardMaterial3D:
 		shirt_mat.uv1_scale = Vector3(26, 26, 26)
 		shirt_mat.cull_mode = BaseMaterial3D.CULL_DISABLED   # collar notch = seeing through the culled inner side
 	return shirt_mat
+
+
+func _make_shoes() -> StandardMaterial3D:
+	# simple dark flats (foot faces split + puffed in the body export)
+	var m: StandardMaterial3D = StandardMaterial3D.new()
+	m.albedo_color = Color(0.07, 0.06, 0.06)
+	m.roughness = 0.5
+	return m
 
 
 func _make_pants() -> StandardMaterial3D:
