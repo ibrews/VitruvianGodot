@@ -93,3 +93,34 @@ cv2.imwrite(os.path.join(OUT, "vit_body_bc.png"), alb_at)
 cv2.imwrite(os.path.join(OUT, "vit_body_rough.png"), rg_at)
 cv2.imwrite(os.path.join(OUT, "vit_body_n.png"), n_at)
 print("[bake] body atlas -> vit_body_{bc,rough,n}.png @%d" % A)
+
+# ---- EYES: sclera (tile 1005) + iris (tile 1007) for the REAL extracted eyeballs ----
+# The sclera ball is CLOSED: its front region is the cornea WINDOW (the grey
+# low-saturation centre of the radial sclera map, r<~0.26) and must be transparent
+# so the iris disc inside shows through. Bake RGBA: alpha feathers 0→1 over the limbus.
+scl = exr("sclera_col.1005.exr")
+# the raw outer sclera is strongly red (reads bloodshot at the exposed corners);
+# desaturate + lighten toward luminance with radius so the visible band stays whitish
+_yy0, _xx0 = np.mgrid[0:scl.shape[0], 0:scl.shape[1]]
+_r0 = np.sqrt((_xx0 - scl.shape[1] / 2.0) ** 2 + (_yy0 - scl.shape[0] / 2.0) ** 2) / (scl.shape[1] / 2.0)
+_luma = (scl[..., 0] * 0.11 + scl[..., 1] * 0.59 + scl[..., 2] * 0.30)[..., None]
+_f = (np.clip((_r0 - 0.30) / 0.25, 0, 1) * 0.55)[..., None]
+scl = scl * (1 - _f) + _luma * 1.06 * _f
+_s = down(u8(scl), 1024)
+_yy, _xx = np.mgrid[0:1024, 0:1024]
+_r = np.sqrt((_xx - 512.0) ** 2 + (_yy - 512.0) ** 2) / 512.0
+_alpha = np.clip((_r - 0.26) / 0.04, 0, 1)
+_alpha = _alpha * _alpha * (3 - 2 * _alpha)
+_alpha = np.maximum(_alpha, 0.07)   # faint wet film over the window → catch-light glint
+_alpha = (_alpha * 255).astype(np.uint8)
+cv2.imwrite(os.path.join(OUT, "vit_sclera.png"), np.dstack([_s, _alpha]))
+iri = exr("iris_col.1007.exr")
+# screen-size iris is ~30px → mips average the small black pupil with the gold ring
+# into GREY. Bake a larger, hard-black pupil (survives averaging) + deepen the gold.
+iri = iri * 0.82
+_yyi, _xxi = np.mgrid[0:iri.shape[0], 0:iri.shape[1]]
+_ri = np.sqrt((_xxi - iri.shape[1] / 2.0) ** 2 + (_yyi - iri.shape[0] / 2.0) ** 2) / (iri.shape[1] / 2.0)
+_pup = (1.0 - np.clip((_ri - 0.13) / 0.035, 0, 1))[..., None]   # hard black disc r<0.13, short feather
+iri = iri * (1 - _pup) + np.float32([0.004, 0.004, 0.005]) * _pup
+cv2.imwrite(os.path.join(OUT, "vit_iris.png"), down(u8(iri), 1024))
+print("[bake] eyes -> vit_sclera.png, vit_iris.png")

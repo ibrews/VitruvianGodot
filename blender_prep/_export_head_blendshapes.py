@@ -49,6 +49,75 @@ try:
     bm.verts.ensure_lookup_table()
     for i,v in enumerate(bm.verts): v[oidx]=i
     bm.faces.ensure_lookup_table()
+
+    # =============== REAL EYES (audit #12): extract tiles 1005+1007 ===============
+    # The mesh ships REAL eyeballs: per side a sclera SPHERE (544 faces, full tile-1005
+    # UV), a cornea DOME (256), a flat pupil BACKING disc (32, constant y) and an IRIS
+    # disc (80, full tile-1007 UV). Extract them as one object per side (origin at the
+    # sphere centre so the existing gaze node-rotation driver just works), instead of
+    # deleting them and faking a procedural eyeball. Island sizes classify reliably;
+    # belt-and-braces: backing = flat in y, iris = tile 1007, largest = sclera.
+    import collections as _coll
+    uvbm=bm.loops.layers.uv.active
+    _eye_faces=[f for f in bm.faces if f.material_index==DEL]
+    _eye_objs_real=[]
+    def _islands(faces):
+        fset=set(f.index for f in faces); seen=set(); out=[]
+        lut={f.index:f for f in faces}
+        for f in faces:
+            if f.index in seen: continue
+            comp=[]; dq=_coll.deque([f]); seen.add(f.index)
+            while dq:
+                g=dq.popleft(); comp.append(g)
+                for e in g.edges:
+                    for h in e.link_faces:
+                        if h.index in fset and h.index not in seen:
+                            seen.add(h.index); dq.append(h)
+            out.append(comp)
+        return out
+    for _side,_sgn in (("L",-1.0),("R",1.0)):
+        sf=[f for f in _eye_faces if f.calc_center_median().x*_sgn>0]
+        isls=sorted(_islands(sf),key=lambda c:-len(c))
+        # classify: sclera=largest; iris=tile 1007 (u>=6); back=flat y; rest=cornea
+        parts={}
+        for comp in isls:
+            u0=comp[0].loops[0][uvbm].uv.x
+            ys=[v.co.y for f in comp for v in f.verts]
+            if comp is isls[0]: parts.setdefault("sclera",[]).extend(comp)
+            elif u0>=6.0: parts.setdefault("iris",[]).extend(comp)
+            elif max(ys)-min(ys)<0.0008: parts.setdefault("back",[]).extend(comp)
+            else: parts.setdefault("cornea",[]).extend(comp)
+        log("eye",_side,{k:len(v) for k,v in parts.items()})
+        ORDER=["sclera","iris","back","cornea"]
+        MATN={"sclera":"VitSclera","iris":"VitIris","back":"VitEyeBack","cornea":"VitCornea2"}
+        ebm=bmesh.new(); euv=ebm.loops.layers.uv.new("UVMap"); vmap={}
+        for mi_i,part in enumerate(ORDER):
+            for f in parts.get(part,[]):
+                nv=[]
+                for v in f.verts:
+                    if v.index not in vmap: vmap[v.index]=ebm.verts.new(v.co)
+                    nv.append(vmap[v.index])
+                try: nf=ebm.faces.new(nv)
+                except ValueError: continue
+                nf.material_index=mi_i
+                for lo,ln in zip(f.loops,nf.loops):
+                    u,vv=lo[uvbm].uv
+                    ln[euv].uv=(u-math.floor(u), vv-math.floor(vv))   # tile → 0-1
+        eme=bpy.data.meshes.new("Eye_%s_mesh"%_side)
+        ebm.normal_update(); ebm.to_mesh(eme); ebm.free()
+        for part in ORDER: eme.materials.append(bpy.data.materials.new(MATN[part]))
+        eo=bpy.data.objects.new("Eye_%s_eyeball"%_side,eme)
+        bpy.context.scene.collection.objects.link(eo)
+        # origin = sclera-sphere bbox centre → Godot gaze rotation pivots correctly
+        sc=[v.co.copy() for f in parts["sclera"] for v in f.verts]
+        ctr=Vector((sum(c.x for c in sc)/len(sc),
+                    (max(c.y for c in sc)+min(c.y for c in sc))/2,
+                    (max(c.z for c in sc)+min(c.z for c in sc))/2))
+        for v in eme.vertices: v.co-=ctr
+        eo.location=ctr
+        _eye_objs_real.append(eo)
+        log("eye",_side,"centre",tuple(round(x,4) for x in ctr),"verts",len(eme.vertices))
+
     bmesh.ops.delete(bm,geom=[f for f in bm.faces if f.material_index==DEL],context='FACES')
     bm.verts.ensure_lookup_table()
     bmesh.ops.delete(bm,geom=[v for v in bm.verts if not v.link_faces],context='VERTS')
@@ -113,31 +182,11 @@ try:
     for nm in FACS: log("FACS",nm,add_facs(nm))
     log("TOTAL shape keys:",len(obj.data.shape_keys.key_blocks))
 
-    # =============== eyeballs + lashes (verbatim from head export) ===============
-    bpy.ops.import_scene.gltf(filepath=EYEBALL_GLB)
-    src={}
-    for o in list(bpy.context.selected_objects):
-        if o.type=='MESH' and o.name in ("eyeball","cornea"):
-            bpy.ops.object.select_all(action='DESELECT')
-            o.select_set(True); bpy.context.view_layer.objects.active=o
-            bpy.ops.object.transform_apply(location=False,rotation=True,scale=True)
-            src[o.name]=o
-    eb=src["eyeball"]; ebme=eb.data; iris_axis=None; bestd=9.0
-    uvl3=ebme.uv_layers.active.data
-    for poly in ebme.polygons:
-        for li in poly.loop_indices:
-            uv=uvl3[li].uv; d=(uv.x-0.5)**2+(uv.y-0.5)**2
-            if d<bestd: bestd=d; iris_axis=ebme.vertices[ebme.loops[li].vertex_index].co.normalized()
-    rot_q=iris_axis.rotation_difference(IRIS_FWD)
-    eye_mat_obj={"eyeball":bpy.data.materials.new("VitEyeball"),"cornea":bpy.data.materials.new("VitCornea")}
-    eye_objs=[]
-    for side,center in SOCK.items():
-        for nm,so in src.items():
-            d=so.copy(); d.data=so.data.copy(); bpy.context.scene.collection.objects.link(d)
-            d.name="Eye_%s_%s"%(side,nm); d.rotation_mode='QUATERNION'; d.rotation_quaternion=rot_q
-            d.scale=(EYE_R,EYE_R,EYE_R); d.location=center+Vector((0.0,EYE_RECESS,0.0))
-            d.data.materials.clear(); d.data.materials.append(eye_mat_obj[nm]); eye_objs.append(d)
-    for so in src.values(): bpy.data.objects.remove(so,do_unlink=True)
+    # =============== eyes: the REAL extracted eyeballs (tiles 1005/1007) ===============
+    # The procedural blackears eyeball spheres are RETIRED — the mesh's own eyes
+    # (extracted above as Eye_L/R_eyeball with sclera/iris/back/cornea surfaces) fit
+    # the lid skin perfectly by construction and carry the shipped 4K eye textures.
+    eye_objs=list(_eye_objs_real)
     # lashes
     NCOLS=4; lash_mat=bpy.data.materials.new("VitLash")
     def _emit_lash(bm,uvl,root,lash_dir,side_vec,length,w_root,w_tip,curl,col):

@@ -261,6 +261,8 @@ func _ready() -> void:
 		_update_orbit_camera()
 	if OS.has_environment("FRAME_BODY"):
 		_frame_view("full")
+		dof_enabled = false; _apply_dof()   # focus is portrait-tuned (0.52m) — at 3m the
+		                                    # whole figure was always slightly DOF-soft
 	if not OS.has_environment("NO_LOAD_SETTINGS"):
 		_load_settings()
 	if OS.has_environment("LOOKDEV_CAPTURE"):
@@ -541,6 +543,10 @@ func _load_and_wire() -> bool:
 				"VitEyeshadow": mi.set_surface_override_material(s, _make_eyeshadow())
 				"VitTearline": mi.set_surface_override_material(s, _make_tearline())
 				"VitCaruncle": mi.set_surface_override_material(s, _make_caruncle())
+				"VitSclera":  mi.set_surface_override_material(s, _make_sclera())
+				"VitIris":    mi.set_surface_override_material(s, _make_iris_real())
+				"VitEyeBack": mi.set_surface_override_material(s, _make_eyeback())
+				"VitCornea2": mi.set_surface_override_material(s, _make_cornea_shell())
 				_:            pass
 		# capture the face mesh (ARKit blend shapes) + eyeball spheres for the face driver
 		if mi.mesh.get_blend_shape_count() > 0 and face_mi == null:
@@ -550,6 +556,8 @@ func _load_and_wire() -> bool:
 		if mi.name.begins_with("Eye_"):
 			eye_nodes.append({"node": mi, "rest_basis": mi.transform.basis, "rest_pos": mi.position})
 			mi.layers = 1 | (1 << 1)   # also on the EYE layer → catch-light spark hits eyes only
+			mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF   # the closed sclera
+			# ball was SHADOWING ITS OWN INTERIOR → ambient-dark iris behind the cornea window
 			if mi.name.ends_with("_eyeball"):
 				FaceExtras.add_lid_ao(mi)   # lid-contact AO band (grounds the eyeball)
 		if mi.name.begins_with("LidUp"):
@@ -1144,6 +1152,49 @@ func _make_eyeshadow() -> StandardMaterial3D:
 	m.cull_mode = BaseMaterial3D.CULL_DISABLED
 	m.no_depth_test = false
 	eyeshadow_mats.append(m)
+	return m
+
+
+# ── REAL EYES (audit #12): the mesh's own eyeballs (tiles 1005/1007), extracted as
+# Eye_L/R_eyeball with four surfaces. Sclera + iris carry the shipped 4K eye maps;
+# the cornea dome is a thin wet shell; the backing disc sits dark behind the iris.
+func _make_sclera() -> StandardMaterial3D:
+	var m: StandardMaterial3D = StandardMaterial3D.new()
+	m.albedo_texture = _tex("res://vit_sclera.png")
+	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA   # texture alpha = cornea window
+	m.cull_mode = BaseMaterial3D.CULL_BACK
+	m.albedo_color = Color(0.96, 0.94, 0.93)
+	m.roughness = 0.18
+	if OS.get_environment("EYE_AB") == "nosclera":
+		m.albedo_color.a = 0.0; m.roughness = 1.0; m.metallic_specular = 0.0
+	return m
+
+
+func _make_iris_real() -> StandardMaterial3D:
+	var m: StandardMaterial3D = StandardMaterial3D.new()
+	m.albedo_texture = _tex("res://vit_iris.png")
+	m.roughness = 0.55
+	return m
+
+
+func _make_eyeback() -> StandardMaterial3D:
+	var m: StandardMaterial3D = StandardMaterial3D.new()
+	m.albedo_color = Color(0.008, 0.007, 0.008)
+	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED   # guaranteed-black pupil
+	return m
+
+
+func _make_cornea_shell() -> StandardMaterial3D:
+	var m: StandardMaterial3D = StandardMaterial3D.new()
+
+	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	# INVISIBLE: this inner dome's 5% white film + gloss rendered a GREY DISC exactly
+	# over the pupil. The ball's own front window (sclera surface) is the wet cornea.
+	m.albedo_color = Color(1.0, 1.0, 1.0, 0.0)
+	m.roughness = 0.03
+	m.cull_mode = BaseMaterial3D.CULL_BACK
+	if OS.get_environment("EYE_AB") == "nocornea":
+		m.albedo_color.a = 0.0; m.roughness = 1.0; m.metallic_specular = 0.0
 	return m
 
 

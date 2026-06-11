@@ -12,6 +12,10 @@ extends RefCounted
 # Dark occlusion band over the upper third of an eyeball. Parented next to the eye
 # node (static relative to the head — real lid AO doesn't follow gaze).
 static func add_lid_ao(eye_mi: MeshInstance3D, eye_r: float = 0.012) -> MeshInstance3D:
+	# size the band from the actual eyeball mesh (the REAL extracted eye is r≈0.0147,
+	# bigger than the old procedural sphere — a fixed radius would hide inside it)
+	if eye_mi.mesh:
+		eye_r = maxf(eye_r, eye_mi.mesh.get_aabb().size.x * 0.5)
 	var R: float = eye_r * 1.06          # just proud of the eyeball, under the skin lid
 	var el0: float = deg_to_rad(6.0)     # fades to 0 here (lower edge, over the iris top)
 	var el1: float = deg_to_rad(58.0)    # full dark at the lid line

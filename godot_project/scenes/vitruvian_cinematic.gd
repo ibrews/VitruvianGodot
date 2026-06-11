@@ -290,6 +290,10 @@ func _load_head_and_hair() -> void:
 				"VitEyeshadow": mi.set_surface_override_material(si, _mat_eyeshadow())
 				"VitTearline": mi.set_surface_override_material(si, _mat_tearline())
 				"VitCaruncle": mi.set_surface_override_material(si, _mat_caruncle())
+				"VitSclera":  mi.set_surface_override_material(si, _mat_sclera())
+				"VitIris":    mi.set_surface_override_material(si, _mat_iris_real())
+				"VitEyeBack": mi.set_surface_override_material(si, _mat_eyeback())
+				"VitCornea2": mi.set_surface_override_material(si, _mat_cornea_shell())
 				_: pass
 		# capture the face mesh (carries ARKit blend shapes) + eyeball spheres
 		if mi.mesh.get_blend_shape_count() > 0 and face_mi == null:
@@ -299,6 +303,7 @@ func _load_head_and_hair() -> void:
 		if mi.name.begins_with("Eye_"):
 			eye_nodes.append({"node": mi, "rest_basis": mi.transform.basis, "rest_pos": mi.position})
 			mi.layers = 1 | (1 << 1)   # EYE layer → the cull-masked catch-light hits eyes only
+			mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF   # ball self-shadowed its iris
 			if mi.name.ends_with("_eyeball"):
 				FaceExtras.add_lid_ao(mi)   # lid-contact AO band (grounds the eyeball)
 		if mi.name.begins_with("LidUp"):
@@ -692,6 +697,39 @@ func _mat_eyeshadow() -> StandardMaterial3D:
 	m.cull_mode = BaseMaterial3D.CULL_DISABLED
 	return m
 
+
+# REAL EYES (tiles 1005/1007) — see lookdev for the layout
+func _mat_sclera() -> StandardMaterial3D:
+	var m := StandardMaterial3D.new()
+	m.albedo_texture = _tex("res://vit_sclera.png")
+	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA   # texture alpha = cornea window
+	m.cull_mode = BaseMaterial3D.CULL_BACK
+	m.albedo_color = Color(0.84, 0.82, 0.81)   # dimmer than lookdev (hot cine lights)
+	m.roughness = 0.18
+	return m
+
+func _mat_iris_real() -> StandardMaterial3D:
+	var m := StandardMaterial3D.new()
+	m.albedo_texture = _tex("res://vit_iris.png")
+	m.albedo_color = Color(0.72, 0.69, 0.67)   # the hot cine key washed the gold out
+	m.roughness = 0.55
+	return m
+
+func _mat_eyeback() -> StandardMaterial3D:
+	var m := StandardMaterial3D.new()
+	m.albedo_color = Color(0.008, 0.007, 0.008)
+	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED   # guaranteed-black pupil
+	return m
+
+func _mat_cornea_shell() -> StandardMaterial3D:
+	var m := StandardMaterial3D.new()
+	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	# INVISIBLE: this inner dome's 5% white film + gloss rendered a GREY DISC exactly
+	# over the pupil. The ball's own front window (sclera surface) is the wet cornea.
+	m.albedo_color = Color(1.0, 1.0, 1.0, 0.0)
+	m.roughness = 0.03
+	m.cull_mode = BaseMaterial3D.CULL_BACK
+	return m
 
 func _mat_tearline() -> StandardMaterial3D:
 	# wet meniscus at the lid line (shipped CharMorph asset, pre-fitted)
