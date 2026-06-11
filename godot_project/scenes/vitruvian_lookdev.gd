@@ -1025,8 +1025,15 @@ func _make_shirt() -> StandardMaterial3D:
 	if shirt_mat == null:
 		shirt_mat = StandardMaterial3D.new()
 		shirt_mat.albedo_color = Color(0.18, 0.22, 0.30)   # muted blue tee
-		shirt_mat.roughness = 0.85
+		shirt_mat.roughness = 0.88
 		shirt_mat.metallic = 0.0
+		# knit weave (triplanar so the CharMorph cloth needs no UV work)
+		shirt_mat.normal_enabled = true
+		shirt_mat.normal_texture = _tex("res://vit_fabric_n.png")
+		shirt_mat.normal_scale = 0.55
+		shirt_mat.uv1_triplanar = true
+		shirt_mat.uv1_scale = Vector3(26, 26, 26)
+		shirt_mat.cull_mode = BaseMaterial3D.CULL_DISABLED   # collar notch = seeing through the culled inner side
 	return shirt_mat
 
 
@@ -1034,8 +1041,14 @@ func _make_pants() -> StandardMaterial3D:
 	if pants_mat == null:
 		pants_mat = StandardMaterial3D.new()
 		pants_mat.albedo_color = Color(0.12, 0.12, 0.14)   # dark slacks
-		pants_mat.roughness = 0.8
+		pants_mat.roughness = 0.82
 		pants_mat.metallic = 0.0
+		pants_mat.normal_enabled = true
+		pants_mat.normal_texture = _tex("res://vit_fabric_n.png")
+		pants_mat.normal_scale = 0.4
+		pants_mat.uv1_triplanar = true
+		pants_mat.uv1_scale = Vector3(40, 40, 40)   # finer twill read than the tee
+		pants_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 	return pants_mat
 
 
