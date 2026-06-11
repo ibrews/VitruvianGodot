@@ -10,6 +10,7 @@ extends Node3D
 # Capture: CINEMA_CAPTURE=<dir> Godot ... scenes/vitruvian_cinematic.tscn  → PNG frames
 # ════════════════════════════════════════════════════════════════════════════
 
+const FaceExtras = preload("res://scenes/face_extras.gd")
 const BODY_GLB := "res://vitruvian_body.glb"
 const HEAD_GLB := "res://vitruvian_head.glb"
 const HAIR_GLB := "res://hairtool_cards.glb"
@@ -53,9 +54,20 @@ var bshapes: Dictionary = {}                # ARKit name -> blend shape index
 var eye_nodes: Array = []                   # [{node, rest_scale}] eyeball + cornea spheres
 var upper_lids: Array = []                  # [{node, rest_basis}] upper eyelids (rotate down to blink)
 var _gaze: Vector2 = Vector2.ZERO           # smoothed eye look (yaw,pitch rad)
+# resting-gaze correction (audit: doll stare slightly down + inward). Same values as
+# look-dev (calibrated via EYE_SHOT / GAZE_TUNE captures there).
+const GAZE_PITCH_BIAS: float = 0.05         # lift gaze to camera height
+const GAZE_DIVERGE: float = 0.012           # rotate each eye slightly OUTWARD (un-cross)
+var eyeball_mats: Array[ShaderMaterial] = []  # for pupil dilation on the close-up push-in
 # Godot 4.6.3 does not reliably render native blend-shape combos on this imported mesh
 # (and normalized mode scales combined weights down). Drive the face by rebuilding the
 # surface on the CPU = base + Σ weight*delta (additive, full strength). Matches lookdev.
+# ── viseme speech (audit #14): TTS wav + 30Hz RMS envelope drive the jaw, with the
+# baked L3 visemes cross-faded on top. Starts when the camera lands on the face.
+const SPEECH_T0 := 23.8
+var _speech_env: PackedFloat32Array = PackedFloat32Array()
+var _speech_player: AudioStreamPlayer
+var _speech_started := false
 var _morph_base: PackedVector3Array
 var _morph_arrays: Array
 var _morph_deltas: Dictionary = {}
@@ -88,6 +100,17 @@ func _ready() -> void:
 	if _movie:
 		get_viewport().msaa_3d = Viewport.MSAA_8X
 		print("[cine] MOVIE mode — will quit after ", DUR, "s")
+	# speech assets (wav + envelope) — she SPEAKS the close-up beat now
+	if FileAccess.file_exists("res://speech_envelope.json"):
+		var jd: Variant = JSON.parse_string(FileAccess.get_file_as_string("res://speech_envelope.json"))
+		if typeof(jd) == TYPE_DICTIONARY:
+			for v in jd["env"]:
+				_speech_env.append(float(v))
+	if ResourceLoader.exists("res://speech.wav") and not OS.has_environment("CINE_PREVIEW"):
+		_speech_player = AudioStreamPlayer.new()
+		_speech_player.stream = load("res://speech.wav")
+		add_child(_speech_player)
+	print("[cine] speech env frames=", _speech_env.size())
 
 
 # ── environment ─────────────────────────────────────────────────────────────
@@ -98,6 +121,8 @@ func _setup_env() -> void:
 	sky_mat.ground_horizon_color = Color(0.02, 0.02, 0.03)
 	sky_mat.ground_bottom_color = Color(0.01, 0.01, 0.015)
 	sky_mat.energy_multiplier = 0.4
+	sky_mat.sun_angle_max = 0.0   # NO sun discs: 4 directional lights were
+	sky_mat.sun_curve = 0.02      # painting a giant white halo band on the horizon
 	var sky := Sky.new(); sky.sky_material = sky_mat
 	env = Environment.new()
 	env.background_mode = Environment.BG_SKY
@@ -133,17 +158,9 @@ func _setup_env() -> void:
 	add_child(we)
 	RenderingServer.sub_surface_scattering_set_quality(RenderingServer.SUB_SURFACE_SCATTERING_QUALITY_HIGH)
 	RenderingServer.sub_surface_scattering_set_scale(0.08, 0.02)
-	# floor catching a soft pool of light
-	var floor := MeshInstance3D.new()
-	var pm := PlaneMesh.new(); pm.size = Vector2(12, 12)
-	floor.mesh = pm
-	var fmat := StandardMaterial3D.new()
-	fmat.albedo_color = Color(0.05, 0.05, 0.06)
-	fmat.roughness = 0.5
-	fmat.metallic = 0.1
-	floor.material_override = fmat
-	floor.position = Vector3(0, 0, 0)
-	add_child(floor)
+	# floor: radial pool of light fading to black (no horizon band) + real contact shadow
+	FaceExtras.make_floor(self)
+	FaceExtras.make_vignette(self)
 
 
 func _setup_lights() -> void:
@@ -163,7 +180,7 @@ func _setup_lights() -> void:
 
 	var rim := DirectionalLight3D.new()
 	rim.light_energy = 4.5
-	rim.light_specular = 1.0
+	rim.light_specular = 0.3   # was 1.0 — blue spec sparkled/hue-shifted the dark hair mass
 	rim.light_color = Color(0.42, 0.6, 1.0)
 	rim.rotation_degrees = Vector3(-12, 145, 0)
 	add_child(rim)
@@ -175,22 +192,23 @@ func _setup_lights() -> void:
 	fill.rotation_degrees = Vector3(8, 30, 0)
 	add_child(fill)
 
-	# hair/kicker from above-behind
+	# hair/kicker from above-behind (cut 2.6 → 1.5: kept hue-shifting the crown golden)
 	var hair := DirectionalLight3D.new()
-	hair.light_energy = 2.6
-	hair.light_specular = 0.6
+	hair.light_energy = 1.5
+	hair.light_specular = 0.3
 	hair.light_color = Color(1.0, 0.92, 0.8)
 	hair.rotation_degrees = Vector3(-72, -150, 0)
 	add_child(hair)
 
-	# eye catch-light: a small bright omni near the face for the wet eye spark
-	# (without it the eyes read dead). Repositioned each frame in _update_camera.
+	# eye catch-light: cull-masked to the EYE layer (2) so it can be bright for a wet
+	# spark WITHOUT flooding the neck/chin salmon. Repositioned each frame in _update_camera.
 	catch_light = OmniLight3D.new()
-	catch_light.light_energy = 0.1
+	catch_light.light_energy = 0.2
 	catch_light.light_specular = 1.0
 	catch_light.light_color = Color(1.0, 0.98, 0.95)
 	catch_light.omni_range = 0.9
 	catch_light.omni_attenuation = 2.6
+	catch_light.light_cull_mask = 1 << 1
 	catch_light.position = Vector3(0.1, 1.62, 0.6)
 	add_child(catch_light)
 
@@ -229,6 +247,7 @@ func _load_body() -> void:
 				match nm:
 					"VitShirt": mi.set_surface_override_material(si, _mat_shirt())
 					"VitPants": mi.set_surface_override_material(si, _mat_pants())
+					"VitShoes": mi.set_surface_override_material(si, _mat_shoes())
 					_:          mi.set_surface_override_material(si, _mat_body_skin())
 	# loop anims forever; NORMAL playback (manual seek doesn't update the skin in
 	# headless). Determinism comes from Movie Maker's fixed timestep (--write-movie
@@ -270,6 +289,12 @@ func _load_head_and_hair() -> void:
 				"VitMouth":   mi.set_surface_override_material(si, _mat_mouth())
 				"VitScalp":   mi.set_surface_override_material(si, _mat_discard())
 				"VitEyeshadow": mi.set_surface_override_material(si, _mat_eyeshadow())
+				"VitTearline": mi.set_surface_override_material(si, _mat_tearline())
+				"VitCaruncle": mi.set_surface_override_material(si, _mat_caruncle())
+				"VitSclera":  mi.set_surface_override_material(si, _mat_sclera())
+				"VitIris":    mi.set_surface_override_material(si, _mat_iris_real())
+				"VitEyeBack": mi.set_surface_override_material(si, _mat_eyeback())
+				"VitCornea2": mi.set_surface_override_material(si, _mat_cornea_shell())
 				_: pass
 		# capture the face mesh (carries ARKit blend shapes) + eyeball spheres
 		if mi.mesh.get_blend_shape_count() > 0 and face_mi == null:
@@ -278,8 +303,14 @@ func _load_head_and_hair() -> void:
 				bshapes[String(mi.mesh.get_blend_shape_name(bi))] = bi
 		if mi.name.begins_with("Eye_"):
 			eye_nodes.append({"node": mi, "rest_basis": mi.transform.basis, "rest_pos": mi.position})
+			mi.layers = 1 | (1 << 1)   # EYE layer → the cull-masked catch-light hits eyes only
+			mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF   # ball self-shadowed its iris
+			if mi.name.ends_with("_eyeball"):
+				FaceExtras.add_lid_ao(mi)   # lid-contact AO band (grounds the eyeball)
 		if mi.name.begins_with("LidUp"):
 			upper_lids.append({"node": mi, "rest_basis": mi.transform.basis})
+		if mi.name.begins_with("Tearline"):
+			mi.layers = 1 | (1 << 1)   # wet line catches the eye-spark light
 	print("[cine] face blendshapes=", bshapes.size(), " eye_nodes=", eye_nodes.size())
 	# NATIVE blend shapes drive the face (deforms skin + VitMouth interior). No mesh swap.
 
@@ -339,10 +370,10 @@ func _update_jiggle(dt: float) -> void:
 const SEGMENTS := [
 	{"clip": "Idle", "start": 0.0,  "end": 5.0},
 	{"clip": "Sway", "start": 5.0,  "end": 10.0},
-	{"clip": "Walk", "start": 10.0, "end": 17.0},
-	{"clip": "Turn", "start": 17.0, "end": 23.0},
-	{"clip": "Wave", "start": 23.0, "end": 28.0},
-	{"clip": "Idle", "start": 28.0, "end": 31.0},
+	{"clip": "Walk", "start": 10.0, "end": 16.0},
+	{"clip": "Turn", "start": 16.0, "end": 21.0},
+	{"clip": "Wave", "start": 21.0, "end": 24.5},
+	{"clip": "Idle", "start": 24.5, "end": 31.0},   # long final idle: the SPOKEN close-up
 ]
 
 func _process(delta: float) -> void:
@@ -365,6 +396,14 @@ func _process(delta: float) -> void:
 	_drive_face(_t, delta)
 	if hair_spring: hair_spring.step(delta)
 	_update_camera(_t)
+	# speech audio sync (loops with the reel when running live)
+	var lt: float = _t if _movie else fmod(_t, DUR)
+	if _speech_player:
+		if lt >= SPEECH_T0 and not _speech_started:
+			_speech_player.play()
+			_speech_started = true
+		elif lt < SPEECH_T0 and _speech_started and not _movie:
+			_speech_started = false
 	if _movie and _t >= DUR + 0.05:
 		print("[cine] done @ ", _t)
 		get_tree().quit()
@@ -454,34 +493,72 @@ func _drive_face(t: float, delta: float) -> void:
 		face_mi.set_blend_shape_value(bshapes[n], 0.0)
 
 	# ── blink every ~3s via the real Eyes_Closed_Max FACS shape ──
+	# GATED during the 27-31s hero close-up: the one beat meant to sell the face must
+	# never catch the eyes shut (the old preview frame at 29.5s did exactly that).
 	var bt: float = fmod(tt + 0.6, 3.0)
 	var blink: float = (sin(bt / 0.16 * PI) if bt < 0.16 else 0.0)
+	if tt > 23.3 and not (tt > 27.3 and tt < 27.46):   # hold eyes open for the spoken
+		blink = 0.0                                      # close-up; one quick blink at 27.3
+	elif tt > 27.3 and tt < 27.46:
+		blink = sin((tt - 27.3) / 0.16 * PI)
 	_sshape("Eyes_Closed_Max", clampf(blink, 0.0, 1.0))
 
 	# ── expression arc ──
-	var closeup: float = smoothstep(26.5, 28.5, tt)
-	# a silent "hello" — TWO clear mouth-opens (Mouth_Large_Opened = real jaw + teeth +
-	# tongue) in the tight close-up so the working articulation reads unmistakably.
+	var closeup: float = smoothstep(22.8, 24.3, tt)
+	# SPOKEN close-up: the 30Hz RMS envelope opens the jaw; two adjacent visemes from
+	# the baked L3 set cross-fade on top at ~6 Hz so the lips articulate, not just flap.
 	var speak: float = 0.0
-	if tt > 28.6 and tt < 30.9:
-		speak = maxf(0.0, sin((tt - 28.6) / 2.3 * PI * 4.0)) * 0.62
-	# warm Happy smile, suppressed while "speaking" so the open mouth reads cleanly
-	var smile: float = (0.12 + 0.55 * closeup) * (1.0 - clampf(speak * 2.2, 0.0, 0.9))
+	if _speech_env.size() > 0 and tt >= SPEECH_T0:
+		var si: int = int((tt - SPEECH_T0) * 30.0)
+		if si >= 0 and si < _speech_env.size():
+			speak = _speech_env[si]
+	var smile: float = (0.12 + 0.45 * closeup) * (1.0 - clampf(speak * 2.0, 0.0, 0.9))
 	_sshape("Happy", smile)
-	_sshape("Mouth_Large_Opened", speak)
+	_sshape("Mouth_Large_Opened", speak * 0.42)
+	if speak > 0.06:
+		var vis: Array = ["aa_02", "ey_eh_uh_04", "ow_08", "f_v_18", "ey_eh_uh_04"]
+		var vt: float = (tt - SPEECH_T0) * 6.0
+		var vk: int = int(vt)
+		var vf: float = vt - float(vk)
+		var va: float = clampf(speak * 0.85, 0.0, 0.85)
+		_sshape(vis[vk % vis.size()], (1.0 - vf) * va)
+		_sshape(vis[(vk + 1) % vis.size()], vf * va)
 	# a brief brow raise mid-turn for life
-	var browflash: float = smoothstep(17.6, 18.4, tt) * (1.0 - smoothstep(19.6, 21.0, tt)) * 0.7
+	var browflash: float = smoothstep(16.6, 17.4, tt) * (1.0 - smoothstep(18.6, 20.0, tt)) * 0.7
 	_sshape("Eyebrows_Raised_Left", browflash)
 	_sshape("Eyebrows_Raised_Right", browflash)
+	# LIVENESS: asymmetric rest + micro-expression flickers (damped in the close-up so
+	# the hero frames stay composed) + head micro-sway on top of the Mixamo clips.
+	var live: float = 1.0 - closeup * 0.7
+	_sshape("Lips_Up_Corner_Wide_Left", 0.06 * live + browflash * 0.0)
+	var ft: float = fmod(tt, 9.0)
+	if ft > 6.5 and ft < 7.7:
+		_sshape("Thinking", 0.20 * live * sin((ft - 6.5) / 1.2 * PI))
+	var fq: float = fmod(tt + 4.0, 14.0)
+	if fq < 1.0:
+		_sshape("Eyes_Squint", 0.15 * live * sin(fq / 1.0 * PI))
+	if head_rig:
+		head_rig.rotation = Vector3(
+			sin(tt * 0.31) * 0.010 + sin(tt * 0.83) * 0.004,
+			sin(tt * 0.23 + 1.7) * 0.014 + sin(tt * 0.61) * 0.005,
+			sin(tt * 0.40 + 0.6) * 0.006)
 
 	# ── eye saccades: snap to a new gaze target every ~2s, hold; freeze while blinking ──
+	# During the hero close-up the gaze settles ON the camera (slightly up, no darting).
 	if blink < 0.4:
 		var k: int = int(tt / 2.0)
 		var target: Vector2 = Vector2(sin(float(k) * 12.9898) * 0.20, sin(float(k) * 4.1413) * 0.12)
+		target = target.lerp(Vector2.ZERO, closeup)   # hold eye contact in the close-up
 		_gaze = _gaze.lerp(target, clampf(delta * 16.0, 0.0, 1.0))   # fast saccade, then steady
-	var gaze_rot: Basis = Basis.from_euler(Vector3(_gaze.y, 0.0, -_gaze.x))
 	for e in eye_nodes:
+		var side: float = 1.0 if (e["rest_pos"] as Vector3).x > 0.0 else -1.0
+		var gaze_rot: Basis = Basis.from_euler(Vector3(
+			_gaze.y + GAZE_PITCH_BIAS, 0.0, -_gaze.x + GAZE_DIVERGE * side))
 		(e["node"] as MeshInstance3D).transform.basis = gaze_rot * (e["rest_basis"] as Basis)
+	# pupil dilation on the push-in (an "interest" cue; the L3 pupil morphs are not in the
+	# curated set, but the procedural iris exposes pupil_radius directly)
+	for em in eyeball_mats:
+		em.set_shader_parameter("pupil_radius", lerpf(0.10, 0.125, closeup))
 
 
 func _update_camera(t: float) -> void:
@@ -491,7 +568,7 @@ func _update_camera(t: float) -> void:
 	# mostly FULL-BODY (walk/turn/wave shown wide); push to the face for the FINAL idle
 	# beat (28-31s) where the hand is down + a warm smile reads (the wave hand would
 	# otherwise occlude the face during 23-28s).
-	var closeness := smoothstep(26.5, 28.5, tt)
+	var closeness := smoothstep(22.8, 24.3, tt)
 	var orbit := deg_to_rad(-24.0 + 34.0 * sin(tt / DUR * TAU))
 	orbit = lerpf(orbit, deg_to_rad(-9.0), closeness)    # near-frontal in the close-up so the FACE (eyes/mouth) reads
 	# TIGHT face close-up — fill the frame with the head so the (now working) blink,
@@ -509,8 +586,8 @@ func _update_camera(t: float) -> void:
 	# pile onto a frame-filling face) — pull exposure + the hot lights down as we close in.
 	if env:
 		env.tonemap_exposure = lerpf(1.0, 0.70, closeness)
-	if catch_light:
-		catch_light.light_energy = 0.1
+	# (catch-light energy is constant now — it is cull-masked to the eyes, so it can
+	# stay bright in the close-up without flooding the neck)
 	if key_light:
 		key_light.light_energy = lerpf(3.4, 2.1, closeness)
 	if rim_light:
@@ -545,7 +622,7 @@ func _mat_skin() -> ShaderMaterial:
 	var m := ShaderMaterial.new()
 	m.shader = load("res://scenes/skin_shader_local.gdshader") as Shader
 	m.set_shader_parameter("texture_albedo", _tex("res://vit_face_bc.png"))
-	m.set_shader_parameter("albedo", Color(1,1,1,1))
+	m.set_shader_parameter("albedo", Color(0.97, 0.95, 0.94, 1))
 	m.set_shader_parameter("texture_normal", _tex("res://vit_face_n.png"))
 	m.set_shader_parameter("normal_strength", 1.0)
 	m.set_shader_parameter("texture_roughness", _tex("res://vit_face_rough.png"))
@@ -588,19 +665,20 @@ func _mat_eyeball() -> ShaderMaterial:
 	m.set_shader_parameter("iris_radius", 0.32)
 	m.set_shader_parameter("iris_margin", 0.018)
 	m.set_shader_parameter("pupil_radius", 0.10)
-	m.set_shader_parameter("eye_white", Color(0.859, 0.831, 0.80))   # saved eye_white dbd4cc
+	m.set_shader_parameter("eye_white", Color(0.78, 0.75, 0.72))   # darker: sclera blew out white in the spoken close-up
 	m.set_shader_parameter("pupil_color", Color(0.012, 0.010, 0.014))
 	m.set_shader_parameter("texture_iris_color", _iris_ramp())
 	m.set_shader_parameter("eye_cell_scale", 19.0)
 	m.set_shader_parameter("eye_cell_jitter", 0.7)
 	m.set_shader_parameter("iris_pinch", 0.72)
-	m.set_shader_parameter("eyeball_roughness", 0.22)
-	m.set_shader_parameter("eyeball_specular", 0.7)
-	m.set_shader_parameter("sclera_shade", 0.55)
+	m.set_shader_parameter("eyeball_roughness", 0.07)
+	m.set_shader_parameter("eyeball_specular", 0.06)
+	m.set_shader_parameter("sclera_shade", 0.62)
 	m.set_shader_parameter("sclera_edge_tint", Color(0.80, 0.66, 0.60))
 	m.set_shader_parameter("rand_seed", 12345)
 	m.set_shader_parameter("uv1_scale", Vector3(1,1,1))
 	m.set_shader_parameter("uv1_offset", Vector3(0,0,0))
+	eyeball_mats.append(m)
 	return m
 
 func _mat_cornea() -> ShaderMaterial:
@@ -612,20 +690,69 @@ func _mat_cornea() -> ShaderMaterial:
 	return m
 
 func _mat_eyeshadow() -> StandardMaterial3D:
-	# a subtle touch of make-up on the cinematic character (soft tinted upper lid)
+	# eyeshadow OFF (audit: the magenta lid band read as a shading glitch, not makeup)
 	var m := StandardMaterial3D.new()
 	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	m.albedo_color = Color(0.32, 0.18, 0.27, 0.28)
+	m.albedo_color = Color(0.32, 0.18, 0.27, 0.0)
 	m.roughness = 0.6
 	m.cull_mode = BaseMaterial3D.CULL_DISABLED
 	return m
 
 
-func _mat_mouth() -> StandardMaterial3D:
+# REAL EYES (tiles 1005/1007) — see lookdev for the layout
+func _mat_sclera() -> StandardMaterial3D:
 	var m := StandardMaterial3D.new()
-	m.albedo_texture = _tex("res://vit_mouth.png")
-	m.albedo_color = Color(0.85, 0.78, 0.76)
-	m.roughness = 0.42
+	m.albedo_texture = _tex("res://vit_sclera.png")
+	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA   # texture alpha = cornea window
+	m.cull_mode = BaseMaterial3D.CULL_BACK
+	m.albedo_color = Color(0.84, 0.82, 0.81)   # dimmer than lookdev (hot cine lights)
+	m.roughness = 0.18
+	return m
+
+func _mat_iris_real() -> StandardMaterial3D:
+	var m := StandardMaterial3D.new()
+	m.albedo_texture = _tex("res://vit_iris.png")
+	m.albedo_color = Color(0.72, 0.69, 0.67)   # the hot cine key washed the gold out
+	m.roughness = 0.55
+	return m
+
+func _mat_eyeback() -> StandardMaterial3D:
+	var m := StandardMaterial3D.new()
+	m.albedo_color = Color(0.008, 0.007, 0.008)
+	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED   # guaranteed-black pupil
+	return m
+
+func _mat_cornea_shell() -> StandardMaterial3D:
+	var m := StandardMaterial3D.new()
+	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	# INVISIBLE: this inner dome's 5% white film + gloss rendered a GREY DISC exactly
+	# over the pupil. The ball's own front window (sclera surface) is the wet cornea.
+	m.albedo_color = Color(1.0, 1.0, 1.0, 0.0)
+	m.roughness = 0.03
+	m.cull_mode = BaseMaterial3D.CULL_BACK
+	return m
+
+func _mat_tearline() -> StandardMaterial3D:
+	# wet meniscus at the lid line (shipped CharMorph asset, pre-fitted)
+	var m := StandardMaterial3D.new()
+	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	m.albedo_color = Color(0.30, 0.36, 0.42, 0.12)  # dark wet crevice; the GLINT comes from spec, not albedo
+	m.roughness = 0.04
+	m.cull_mode = BaseMaterial3D.CULL_BACK
+	return m
+
+func _mat_caruncle() -> StandardMaterial3D:
+	# fleshy inner-corner nub (shipped CharMorph asset)
+	var m := StandardMaterial3D.new()
+	m.albedo_color = Color(0.70, 0.34, 0.30)
+	m.roughness = 0.38
+	return m
+
+func _mat_mouth() -> ShaderMaterial:
+	# depth-darkened mouth bag — cavity falls to black behind the lip line (de-muppets)
+	var m := ShaderMaterial.new()
+	m.shader = load("res://scenes/mouth_interior.gdshader") as Shader
+	m.set_shader_parameter("tex_albedo", _tex("res://vit_mouth.png"))
 	return m
 
 func _mat_hair() -> ShaderMaterial:
@@ -645,12 +772,12 @@ func _mat_hair() -> ShaderMaterial:
 	m.set_shader_parameter("roughness_val", 0.90)     # matte → less ribbon sheen
 	m.set_shader_parameter("specular_val", 0.08)
 	m.set_shader_parameter("anisotropy_val", 0.08)
-	m.set_shader_parameter("tonal_variation", 0.7)
+	m.set_shader_parameter("tonal_variation", 0.45)
 	m.set_shader_parameter("clump_count", 40.0)
-	m.set_shader_parameter("tip_lighten", 0.2)
+	m.set_shader_parameter("tip_lighten", 0.18)
 	m.set_shader_parameter("emit", 0.13)
 	m.set_shader_parameter("backlight_color", Color(0.18, 0.10, 0.05, 1.0))
-	m.set_shader_parameter("backlight_strength", 0.45)
+	m.set_shader_parameter("backlight_strength", 0.35)
 	m.set_shader_parameter("density", 1.0)
 	m.set_shader_parameter("scissor", 0.10)            # carve finer strand gaps (de-ribbon)
 	return m
@@ -688,14 +815,15 @@ func _mat_discard() -> ShaderMaterial:
 
 func _mat_body_skin() -> ShaderMaterial:
 	# same skin shader as the face (flat tone) → consistent neck, no tan line
-	var img := Image.create(2, 2, false, Image.FORMAT_RGBA8); img.fill(Color.WHITE)
-	var wt := ImageTexture.create_from_image(img)
 	var m := ShaderMaterial.new()
 	m.shader = load("res://scenes/skin_shader_local.gdshader") as Shader
-	m.set_shader_parameter("texture_albedo", wt)
-	m.set_shader_parameter("albedo", Color(0.69, 0.53, 0.49))
-	m.set_shader_parameter("normal_strength", 0.0)
-	m.set_shader_parameter("roughness", 0.85)
+	# real atlas-baked body skin (see lookdev _make_body_skin for the why)
+	m.set_shader_parameter("texture_albedo", _tex("res://vit_body_bc.png"))
+	m.set_shader_parameter("albedo", Color(1, 1, 1))
+	m.set_shader_parameter("texture_normal", _tex("res://vit_body_n.png"))
+	m.set_shader_parameter("texture_roughness", _tex("res://vit_body_rough.png"))
+	m.set_shader_parameter("normal_strength", 1.0)
+	m.set_shader_parameter("roughness", 0.9)
 	m.set_shader_parameter("specular", 0.30)
 	m.set_shader_parameter("double_specularity", false)
 	m.set_shader_parameter("metallic", 0.0)
@@ -722,11 +850,29 @@ func _mat_body_skin() -> ShaderMaterial:
 func _mat_shirt() -> StandardMaterial3D:
 	var m := StandardMaterial3D.new()
 	m.albedo_color = Color(0.16, 0.20, 0.29)
-	m.roughness = 0.8
+	m.roughness = 0.88
+	m.normal_enabled = true
+	m.normal_texture = _tex("res://vit_fabric_n.png")
+	m.normal_scale = 0.55
+	m.uv1_triplanar = true
+	m.uv1_scale = Vector3(26, 26, 26)
+	m.cull_mode = BaseMaterial3D.CULL_DISABLED   # collar notch = culled inner side
+	return m
+
+func _mat_shoes() -> StandardMaterial3D:
+	var m := StandardMaterial3D.new()
+	m.albedo_color = Color(0.07, 0.06, 0.06)
+	m.roughness = 0.5
 	return m
 
 func _mat_pants() -> StandardMaterial3D:
 	var m := StandardMaterial3D.new()
 	m.albedo_color = Color(0.11, 0.11, 0.13)
-	m.roughness = 0.78
+	m.roughness = 0.82
+	m.normal_enabled = true
+	m.normal_texture = _tex("res://vit_fabric_n.png")
+	m.normal_scale = 0.4
+	m.uv1_triplanar = true
+	m.uv1_scale = Vector3(40, 40, 40)
+	m.cull_mode = BaseMaterial3D.CULL_DISABLED
 	return m

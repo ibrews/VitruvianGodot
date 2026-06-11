@@ -217,16 +217,86 @@ try:
         bm.to_mesh(me); bm.free(); me.update()
         log("body trimmed verts", len(me.vertices), "covered", sum(covered))
 
-        # INFLATE the shirt (push verts out along normals) so it sits proud of the skin and
-        # hides any poke-through (kept neck-column skin + upper chest). User OK'd a thicker shirt.
+        # ---- UDIM → 2×2 atlas UV remap (real body skin textures) ----
+        # bake_skin_textures.py packs tiles 1001-1004 into quadrants of vit_body_*.png
+        # (Godot has no UDIM). Remap the UDIM layer IN PLACE so TEXCOORD_0 samples the
+        # atlas: u' = (frac+col)*0.5, v' = (frac+row)*0.5. The kept neck column is tile
+        # 1001 — the same texture region as the face → neck tone finally matches.
+        QUAD = {1001: (0, 0), 1002: (1, 0), 1003: (0, 1), 1004: (1, 1)}
+        uvl_at = me.uv_layers["VitruvianUV_UDIM"]
+        me.uv_layers.active = uvl_at
+        for uv in me.uv_layers:
+            uv.active_render = (uv.name == "VitruvianUV_UDIM")
+        for d in uvl_at.data:
+            u, v = d.uv
+            tile = 1001 + int(math.floor(u)) + 10 * int(math.floor(v))
+            col, row = QUAD.get(tile, (0, 0))
+            d.uv = ((u - math.floor(u) + col) * 0.5, (v - math.floor(v) + row) * 0.5)
+        log("body UVs remapped to 2x2 atlas (tiles 1001-1004)")
+
+        # ---- SHOES: simple dark flats from the foot skin (audit: barefoot = asset-store).
+        # Faces below the ankle get a VitShoes material; the foot region puffs out 1.5mm
+        # along its normals (fading to 0 at the ankle) so the flat reads as a thin shoe
+        # shell, not painted skin. Follows the rig/walk for free.
+        import numpy as _np
+        me.materials.append(bpy.data.materials.new("VitShoes"))
+        shoe_idx=len(me.materials)-1
+        ANKLE_Z=0.062
+        sbm2=bmesh.new(); sbm2.from_mesh(me); sbm2.normal_update(); sbm2.verts.ensure_lookup_table()
+        nshoe=0
+        for f in sbm2.faces:
+            if f.calc_center_median().z < ANKLE_Z:
+                f.material_index=shoe_idx; nshoe+=1
+        # MELT the toes: Laplacian-smooth the shoe-region POSITIONS so the foot becomes
+        # a single shoe form (deep toe creases survive any amount of pure inflation),
+        # then inflate along smoothed normals. Smoothing fades to 0 at the ankle lip.
+        sverts=[v for v in sbm2.verts if v.co.z < ANKLE_Z + 0.002]
+        for _ in range(14):
+            disp={}
+            for v in sverts:
+                if not v.link_edges: continue
+                avgp=Vector((0,0,0))
+                for e in v.link_edges: avgp += e.other_vert(v).co
+                avgp /= len(v.link_edges)
+                wsm=min(1.0,(ANKLE_Z+0.002-v.co.z)/0.018)   # full melt below ~0.046
+                disp[v]= (avgp - v.co) * 0.5 * wsm
+            for v,dv in disp.items(): v.co += dv
+        sbm2.normal_update()
+        nrm2=_np.array([tuple(v.normal) for v in sbm2.verts])
+        nbrs2=[[e.other_vert(v).index for e in v.link_edges] for v in sbm2.verts]
+        for _ in range(10):
+            avg2=_np.array([nrm2[nb].mean(axis=0) if nb else nrm2[i] for i,nb in enumerate(nbrs2)])
+            nrm2=0.5*nrm2+0.5*avg2
+            nrm2/=_np.clip(_np.linalg.norm(nrm2,axis=1,keepdims=True),1e-9,None)
+        for i,v in enumerate(sbm2.verts):
+            if v.co.z < ANKLE_Z + 0.004:
+                w=min(1.0,(ANKLE_Z+0.004-v.co.z)/0.03)             # fade at the ankle lip
+                amt=0.0015 + 0.0025*min(1.0,max(0.0,(0.035-v.co.z)/0.03))  # toes swell most
+                v.co += Vector((nrm2[i][0],nrm2[i][1],nrm2[i][2]))*amt*w
+        sbm2.to_mesh(me); sbm2.free(); me.update()
+        log("shoes: faces",nshoe,"(toe-merged inflation)")
+
+        # INFLATE the shirt (push verts out along SMOOTHED normals) so it sits proud of the
+        # skin and hides any poke-through. Raw per-vert normals made the shoulder seams
+        # inflate into POINTY SPIKES (audit #5/Tier-1 #10): at a hard seam/crease the normal
+        # flips direction vert-to-vert, so +6mm tears the seam into peaks. Laplacian-smooth
+        # the normal field first → low-frequency, seam-stable inflation direction.
+        import numpy as _np
         for o in cloth:
             is_shirt = ("Shirt" in o.name) or (o.data.materials and "Shirt" in o.data.materials[0].name)
             if not is_shirt: continue
             sbm=bmesh.new(); sbm.from_mesh(o.data); sbm.normal_update()
-            for v in sbm.verts:
-                v.co += v.normal * 0.006        # ~6mm thicker
+            sbm.verts.ensure_lookup_table()
+            nrm=_np.array([tuple(v.normal) for v in sbm.verts])
+            nbrs=[[e.other_vert(v).index for e in v.link_edges] for v in sbm.verts]
+            for _ in range(8):
+                avg=_np.array([nrm[nb].mean(axis=0) if nb else nrm[i] for i,nb in enumerate(nbrs)])
+                nrm=0.5*nrm+0.5*avg
+                nrm/=_np.clip(_np.linalg.norm(nrm,axis=1,keepdims=True),1e-9,None)
+            for i,v in enumerate(sbm.verts):
+                v.co += Vector((nrm[i][0],nrm[i][1],nrm[i][2])) * 0.006
             sbm.to_mesh(o.data); sbm.free(); o.data.update()
-            log("inflated shirt", o.name)
+            log("inflated shirt (smoothed normals)", o.name)
 
         # optional clothed verification render (export pass) before writing GLB
         if "clothtest" in ARGS:
