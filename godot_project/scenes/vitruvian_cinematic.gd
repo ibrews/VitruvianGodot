@@ -271,6 +271,8 @@ func _load_head_and_hair() -> void:
 				"VitMouth":   mi.set_surface_override_material(si, _mat_mouth())
 				"VitScalp":   mi.set_surface_override_material(si, _mat_discard())
 				"VitEyeshadow": mi.set_surface_override_material(si, _mat_eyeshadow())
+				"VitTearline": mi.set_surface_override_material(si, _mat_tearline())
+				"VitCaruncle": mi.set_surface_override_material(si, _mat_caruncle())
 				_: pass
 		# capture the face mesh (carries ARKit blend shapes) + eyeball spheres
 		if mi.mesh.get_blend_shape_count() > 0 and face_mi == null:
@@ -284,6 +286,8 @@ func _load_head_and_hair() -> void:
 				FaceExtras.add_lid_ao(mi)   # lid-contact AO band (grounds the eyeball)
 		if mi.name.begins_with("LidUp"):
 			upper_lids.append({"node": mi, "rest_basis": mi.transform.basis})
+		if mi.name.begins_with("Tearline"):
+			mi.layers = 1 | (1 << 1)   # wet line catches the eye-spark light
 	print("[cine] face blendshapes=", bshapes.size(), " eye_nodes=", eye_nodes.size())
 	# NATIVE blend shapes drive the face (deforms skin + VitMouth interior). No mesh swap.
 
@@ -481,6 +485,21 @@ func _drive_face(t: float, delta: float) -> void:
 	var browflash: float = smoothstep(17.6, 18.4, tt) * (1.0 - smoothstep(19.6, 21.0, tt)) * 0.7
 	_sshape("Eyebrows_Raised_Left", browflash)
 	_sshape("Eyebrows_Raised_Right", browflash)
+	# LIVENESS: asymmetric rest + micro-expression flickers (damped in the close-up so
+	# the hero frames stay composed) + head micro-sway on top of the Mixamo clips.
+	var live: float = 1.0 - closeup * 0.7
+	_sshape("Lips_Up_Corner_Wide_Left", 0.06 * live + browflash * 0.0)
+	var ft: float = fmod(tt, 9.0)
+	if ft > 6.5 and ft < 7.7:
+		_sshape("Thinking", 0.20 * live * sin((ft - 6.5) / 1.2 * PI))
+	var fq: float = fmod(tt + 4.0, 14.0)
+	if fq < 1.0:
+		_sshape("Eyes_Squint", 0.15 * live * sin(fq / 1.0 * PI))
+	if head_rig:
+		head_rig.rotation = Vector3(
+			sin(tt * 0.31) * 0.010 + sin(tt * 0.83) * 0.004,
+			sin(tt * 0.23 + 1.7) * 0.014 + sin(tt * 0.61) * 0.005,
+			sin(tt * 0.40 + 0.6) * 0.006)
 
 	# ── eye saccades: snap to a new gaze target every ~2s, hold; freeze while blinking ──
 	# During the hero close-up the gaze settles ON the camera (slightly up, no darting).
@@ -638,6 +657,22 @@ func _mat_eyeshadow() -> StandardMaterial3D:
 	return m
 
 
+func _mat_tearline() -> StandardMaterial3D:
+	# wet meniscus at the lid line (shipped CharMorph asset, pre-fitted)
+	var m := StandardMaterial3D.new()
+	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	m.albedo_color = Color(0.30, 0.36, 0.42, 0.12)  # dark wet crevice; the GLINT comes from spec, not albedo
+	m.roughness = 0.04
+	m.cull_mode = BaseMaterial3D.CULL_BACK
+	return m
+
+func _mat_caruncle() -> StandardMaterial3D:
+	# fleshy inner-corner nub (shipped CharMorph asset)
+	var m := StandardMaterial3D.new()
+	m.albedo_color = Color(0.70, 0.34, 0.30)
+	m.roughness = 0.38
+	return m
+
 func _mat_mouth() -> ShaderMaterial:
 	# depth-darkened mouth bag — cavity falls to black behind the lip line (de-muppets)
 	var m := ShaderMaterial.new()
@@ -705,14 +740,15 @@ func _mat_discard() -> ShaderMaterial:
 
 func _mat_body_skin() -> ShaderMaterial:
 	# same skin shader as the face (flat tone) → consistent neck, no tan line
-	var img := Image.create(2, 2, false, Image.FORMAT_RGBA8); img.fill(Color.WHITE)
-	var wt := ImageTexture.create_from_image(img)
 	var m := ShaderMaterial.new()
 	m.shader = load("res://scenes/skin_shader_local.gdshader") as Shader
-	m.set_shader_parameter("texture_albedo", wt)
-	m.set_shader_parameter("albedo", Color(0.69, 0.53, 0.49))
-	m.set_shader_parameter("normal_strength", 0.0)
-	m.set_shader_parameter("roughness", 0.85)
+	# real atlas-baked body skin (see lookdev _make_body_skin for the why)
+	m.set_shader_parameter("texture_albedo", _tex("res://vit_body_bc.png"))
+	m.set_shader_parameter("albedo", Color(1, 1, 1))
+	m.set_shader_parameter("texture_normal", _tex("res://vit_body_n.png"))
+	m.set_shader_parameter("texture_roughness", _tex("res://vit_body_rough.png"))
+	m.set_shader_parameter("normal_strength", 1.0)
+	m.set_shader_parameter("roughness", 0.9)
 	m.set_shader_parameter("specular", 0.30)
 	m.set_shader_parameter("double_specularity", false)
 	m.set_shader_parameter("metallic", 0.0)

@@ -252,6 +252,26 @@ try:
         eye_objs.append(build_eyeshadow(center+Vector((0.0,EYE_RECESS,0.0)),EYE_R,"Eyeshadow_%s"%side_name))
     log("added eyeshadow patches")
 
+    # ---- TEARLINE + LACRIMAL CARUNCLE (shipped ready-made, PRE-FITTED to this head) ----
+    # The two missing eye-contact details from the audit: the wet line where the lid
+    # meets the eyeball, and the fleshy inner-corner nub. Both .blends sit exactly at
+    # the eye sockets (bbox z 1.628-1.638) — append, rename materials so Godot can wire
+    # them (VitTearline = glossy wet transparent strip, VitCaruncle = fleshy pink).
+    ASSET_DIR=r"C:/Users/Sam/AppData/Roaming/Blender Foundation/Blender/4.5/scripts/addons/CharMorph/data/characters/Vitruvian/assets"
+    for blend_name,obj_name,mat_name in (("Tearline.blend","Tearline","VitTearline"),
+                                          ("Lacrimal_Caruncle.blend","Lacrimal_Caruncle","VitCaruncle")):
+        bp=os.path.join(ASSET_DIR,blend_name)
+        if not os.path.exists(bp):
+            log("MISSING asset",bp); continue
+        with bpy.data.libraries.load(bp,link=False) as (df,dt):
+            dt.objects=[n for n in df.objects if n==obj_name]
+        for ao in dt.objects:
+            if ao is None or ao.type!='MESH': continue
+            bpy.context.scene.collection.objects.link(ao)
+            ao.data.materials.clear(); ao.data.materials.append(bpy.data.materials.new(mat_name))
+            eye_objs.append(ao)
+            log("appended",obj_name,"verts",len(ao.data.vertices))
+
     # (Neck-base filler REMOVED — the body now keeps its real neck/collar skin, so no
     # crude filler cone is needed. That filler read as flat skin tabs/wings; gone now.)
 

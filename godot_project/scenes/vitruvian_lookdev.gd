@@ -539,6 +539,8 @@ func _load_and_wire() -> bool:
 				"VitMouth":   mi.set_surface_override_material(s, _make_mouth())
 				"VitScalp":   mi.set_surface_override_material(s, _make_scalp())
 				"VitEyeshadow": mi.set_surface_override_material(s, _make_eyeshadow())
+				"VitTearline": mi.set_surface_override_material(s, _make_tearline())
+				"VitCaruncle": mi.set_surface_override_material(s, _make_caruncle())
 				_:            pass
 		# capture the face mesh (ARKit blend shapes) + eyeball spheres for the face driver
 		if mi.mesh.get_blend_shape_count() > 0 and face_mi == null:
@@ -552,6 +554,8 @@ func _load_and_wire() -> bool:
 				FaceExtras.add_lid_ao(mi)   # lid-contact AO band (grounds the eyeball)
 		if mi.name.begins_with("LidUp"):
 			upper_lids.append({"node": mi, "rest_basis": mi.transform.basis})
+		if mi.name.begins_with("Tearline"):
+			mi.layers = 1 | (1 << 1)   # wet line catches the eye-spark light
 
 	if OS.has_environment("DUMP_HEAD"):
 		for mi in meshes:
@@ -759,6 +763,16 @@ func _drive_face(delta: float) -> void:
 		blink_amt = sin(bt / 0.16 * PI) if bt < 0.16 else 0.0   # a blink every ~3s (Eyes_Closed_Max)
 		_sshape("Smile_Lips_Closed", 0.45)                      # gentle resting smile (no teeth)
 		_sshape("Happy", 0.10)
+		# LIVENESS: asymmetric resting face (perfect symmetry reads mannequin) +
+		# occasional micro-expressions — a brief "thinking" flicker and an eye squint.
+		_sshape("Lips_Up_Corner_Wide_Left", 0.07)
+		_sshape("Eyebrows_Raised_Left", 0.05)
+		var ft: float = fmod(_time, 11.0)
+		if ft > 8.0 and ft < 9.4:
+			_sshape("Thinking", 0.22 * sin((ft - 8.0) / 1.4 * PI))
+		var f2: float = fmod(_time + 5.0, 17.0)
+		if f2 < 1.1:
+			_sshape("Eyes_Squint", 0.18 * sin(f2 / 1.1 * PI))
 		_sshape("Eyes_Closed_Max", clampf(blink_amt, 0.0, 1.0))
 		if blink_amt > 0.4: saccade = false
 	else:
@@ -788,6 +802,13 @@ func _drive_face(delta: float) -> void:
 			var side: float = 1.0 if (e["rest_pos"] as Vector3).x > 0.0 else -1.0
 			var gr: Basis = Basis.from_euler(Vector3(g.y + pitch_bias, 0.0, -g.x + diverge * side))
 			(e["node"] as MeshInstance3D).transform.basis = gr * (e["rest_basis"] as Basis)
+	# LIVENESS: head micro-sway (multi-frequency, ~1°) — stillness between anims is the
+	# deepest mannequin trigger. Skipped under NO_SACCADE so captures stay deterministic.
+	if head_rig and not OS.has_environment("NO_SACCADE"):
+		head_rig.rotation = Vector3(
+			sin(_time * 0.31) * 0.012 + sin(_time * 0.83) * 0.005,
+			sin(_time * 0.23 + 1.7) * 0.018 + sin(_time * 0.61) * 0.006,
+			sin(_time * 0.40 + 0.6) * 0.008)
 
 
 # ── one-click lighting presets ───────────────────────────────────────────────
@@ -965,14 +986,17 @@ func _make_body_skin() -> ShaderMaterial:
 	# SAME skin shader as the face (flat tone, no textures) so the neck/hands shade
 	# identically to the face — fixes the 'blocky tan line' where head meets body.
 	if body_skin_mat == null:
-		var img := Image.create(2, 2, false, Image.FORMAT_RGBA8); img.fill(Color.WHITE)
-		var wt := ImageTexture.create_from_image(img)
 		body_skin_mat = ShaderMaterial.new()
 		body_skin_mat.shader = load("res://scenes/skin_shader_local.gdshader") as Shader
-		body_skin_mat.set_shader_parameter("texture_albedo", wt)
-		body_skin_mat.set_shader_parameter("albedo", Color(0.69, 0.53, 0.49))   # flat body tone
-		body_skin_mat.set_shader_parameter("normal_strength", 0.0)
-		body_skin_mat.set_shader_parameter("roughness", 0.85)
+		# REAL skin textures: tiles 1001-1004 atlas-baked (bake_skin_textures.py); the
+		# body UVs are remapped to the atlas in _mixamo_retarget.py. The neck shares
+		# tile 1001 with the face, so the tone finally matches across the jaw seam.
+		body_skin_mat.set_shader_parameter("texture_albedo", _tex("res://vit_body_bc.png"))
+		body_skin_mat.set_shader_parameter("albedo", Color(1, 1, 1))
+		body_skin_mat.set_shader_parameter("texture_normal", _tex("res://vit_body_n.png"))
+		body_skin_mat.set_shader_parameter("texture_roughness", _tex("res://vit_body_rough.png"))
+		body_skin_mat.set_shader_parameter("normal_strength", 1.0)
+		body_skin_mat.set_shader_parameter("roughness", 0.9)
 		body_skin_mat.set_shader_parameter("specular", 0.30)
 		body_skin_mat.set_shader_parameter("double_specularity", false)
 		body_skin_mat.set_shader_parameter("metallic", 0.0)
@@ -1107,6 +1131,26 @@ func _make_eyeshadow() -> StandardMaterial3D:
 	m.cull_mode = BaseMaterial3D.CULL_DISABLED
 	m.no_depth_test = false
 	eyeshadow_mats.append(m)
+	return m
+
+
+# Tearline: the wet meniscus where the lid meets the eyeball (shipped CharMorph
+# asset, pre-fitted). Glossy, mostly-transparent — reads as the eye being WET.
+func _make_tearline() -> StandardMaterial3D:
+	var m: StandardMaterial3D = StandardMaterial3D.new()
+	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	m.albedo_color = Color(0.30, 0.36, 0.42, 0.12)  # dark wet crevice; the GLINT comes from spec, not albedo
+	m.roughness = 0.04
+	m.metallic = 0.0
+	m.cull_mode = BaseMaterial3D.CULL_BACK
+	return m
+
+
+# Lacrimal caruncle: the fleshy pink nub in the inner eye corner (shipped asset).
+func _make_caruncle() -> StandardMaterial3D:
+	var m: StandardMaterial3D = StandardMaterial3D.new()
+	m.albedo_color = Color(0.70, 0.34, 0.30)
+	m.roughness = 0.38
 	return m
 
 
@@ -1371,7 +1415,7 @@ func _build_ui() -> void:
 	_mkcheck(vb, "show_body", "show body (off = head only)", true, func(on):
 		show_body = on
 		for bmi in _body_meshes: bmi.visible = on)
-	_mkcolor(vb, "body_skin_color", "body skin", Color(0.69, 0.53, 0.49), func(c): if body_skin_mat: body_skin_mat.set_shader_parameter("albedo", c))
+	_mkcolor(vb, "body_skin_color", "body skin", Color(1, 1, 1), func(c): if body_skin_mat: body_skin_mat.set_shader_parameter("albedo", c))
 	_mkcolor(vb, "shirt_color", "shirt colour", Color(0.18, 0.22, 0.30), func(c): if shirt_mat: shirt_mat.albedo_color = c)
 	_mkslider(vb, "shirt_rough", "shirt roughness", 0.0, 1.0, 0.01, 0.85, func(v): if shirt_mat: shirt_mat.roughness = v)
 	_mkcolor(vb, "pants_color", "pants colour", Color(0.12, 0.12, 0.14), func(c): if pants_mat: pants_mat.albedo_color = c)

@@ -217,6 +217,23 @@ try:
         bm.to_mesh(me); bm.free(); me.update()
         log("body trimmed verts", len(me.vertices), "covered", sum(covered))
 
+        # ---- UDIM → 2×2 atlas UV remap (real body skin textures) ----
+        # bake_skin_textures.py packs tiles 1001-1004 into quadrants of vit_body_*.png
+        # (Godot has no UDIM). Remap the UDIM layer IN PLACE so TEXCOORD_0 samples the
+        # atlas: u' = (frac+col)*0.5, v' = (frac+row)*0.5. The kept neck column is tile
+        # 1001 — the same texture region as the face → neck tone finally matches.
+        QUAD = {1001: (0, 0), 1002: (1, 0), 1003: (0, 1), 1004: (1, 1)}
+        uvl_at = me.uv_layers["VitruvianUV_UDIM"]
+        me.uv_layers.active = uvl_at
+        for uv in me.uv_layers:
+            uv.active_render = (uv.name == "VitruvianUV_UDIM")
+        for d in uvl_at.data:
+            u, v = d.uv
+            tile = 1001 + int(math.floor(u)) + 10 * int(math.floor(v))
+            col, row = QUAD.get(tile, (0, 0))
+            d.uv = ((u - math.floor(u) + col) * 0.5, (v - math.floor(v) + row) * 0.5)
+        log("body UVs remapped to 2x2 atlas (tiles 1001-1004)")
+
         # INFLATE the shirt (push verts out along SMOOTHED normals) so it sits proud of the
         # skin and hides any poke-through. Raw per-vert normals made the shoulder seams
         # inflate into POINTY SPIKES (audit #5/Tier-1 #10): at a hard seam/crease the normal
