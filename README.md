@@ -94,3 +94,7 @@ which deforms both the skin and the `VitMouth` interior), and the hair runs the
 The Vitruvian character, its morphs/FACS blendshapes, and textures are **CC0**
 (see CharMorph-Vitruvian + *Antonia Polygon*). Mixamo animations are free for use
 under Adobe's license. This project's code is MIT. See `NOTICE.md` for full credits.
+
+## Support
+
+If you like seeing this kind of thing get built and shared, [donations are always welcome](https://www.alexcoulombepresents.com/support) — they buy hardware, render time, and the freedom to keep giving most of this away.
