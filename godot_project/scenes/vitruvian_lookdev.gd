@@ -197,6 +197,9 @@ print('wrote', out, w, 'x', h, len(files), 'frames')
 
 
 func _ready() -> void:
+	if OS.has_feature("web"):
+		# Depth of field is unavailable in the WebGL2 Compatibility renderer.
+		dof_enabled = false
 	_out_dir = ProjectSettings.globalize_path("res://").path_join("..").path_join("out")
 	DirAccess.make_dir_recursive_absolute(_out_dir)
 	_setup_environment()
@@ -473,7 +476,8 @@ func _setup_camera() -> void:
 	camera.attributes = cam_attrs
 	add_child(camera)
 	get_viewport().msaa_3d = Viewport.MSAA_4X
-	get_viewport().screen_space_aa = Viewport.SCREEN_SPACE_AA_FXAA
+	if not OS.has_feature("web"):
+		get_viewport().screen_space_aa = Viewport.SCREEN_SPACE_AA_FXAA
 
 
 # ── Material wiring ─────────────────────────────────────────────────────────
@@ -886,9 +890,17 @@ func _tex(p: String) -> Texture2D:
 	return load(p) as Texture2D if ResourceLoader.exists(p) else null
 
 
+func _skin_shader_path() -> String:
+	# Web exports use WebGL2/Compatibility, which does not expose the screen-space
+	# subsurface-scattering outputs used by the Forward+ skin shader.
+	if OS.has_feature("web"):
+		return "res://scenes/skin_shader_web.gdshader"
+	return "res://scenes/skin_shader_local.gdshader"
+
+
 func _make_skin() -> ShaderMaterial:
 	var mat: ShaderMaterial = ShaderMaterial.new()
-	mat.shader = load("res://scenes/skin_shader_local.gdshader") as Shader
+	mat.shader = load(_skin_shader_path()) as Shader
 	mat.set_shader_parameter("texture_albedo", _tex("res://vit_face_bc.png"))
 	mat.set_shader_parameter("albedo", Color(1, 1, 1, 1))
 	mat.set_shader_parameter("texture_normal", _tex("res://vit_face_n.png"))
@@ -996,7 +1008,7 @@ func _make_body_skin() -> ShaderMaterial:
 	# identically to the face — fixes the 'blocky tan line' where head meets body.
 	if body_skin_mat == null:
 		body_skin_mat = ShaderMaterial.new()
-		body_skin_mat.shader = load("res://scenes/skin_shader_local.gdshader") as Shader
+		body_skin_mat.shader = load(_skin_shader_path()) as Shader
 		# REAL skin textures: tiles 1001-1004 atlas-baked (bake_skin_textures.py); the
 		# body UVs are remapped to the atlas in _mixamo_retarget.py. The neck shares
 		# tile 1001 with the face, so the tone finally matches across the jaw seam.
