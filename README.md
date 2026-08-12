@@ -44,6 +44,17 @@ Click the **animation** + **expression** buttons (smile / jawopen / talk / surpr
 / frown / angry / blink), the **lighting presets**, and tweak the sliders; **Save
 settings** writes `look_settings.json` (loaded on startup).
 
+### Progressive Web App
+
+Install the Godot Web export templates, then build the installable offline PWA:
+
+```bash
+GODOT_BIN=Godot_v4.6 ./scripts/build-web.sh
+```
+
+Serve `dist/` over HTTPS. The Web preset is single-threaded for Safari and iOS,
+and uses the WebGL2 Compatibility renderer with a browser-safe skin material.
+
 ## Repo layout
 ```
 godot_project/                 Godot 4.6 project (Forward+)

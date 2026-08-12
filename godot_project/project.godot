@@ -13,6 +13,7 @@ config/name="VitruvianGodot"
 config/description="CC0 'Vitruvian' (CharMorph) head rendered in stock Godot 4.6
 Forward+ through the MatMADNESS skin shader stack. EULA-free alternative to the
 MetaHuman->Godot pipeline."
+config/icon="res://icon.svg"
 run/main_scene="res://scenes/vitruvian_lookdev.tscn"
 config/features=PackedStringArray("4.6", "Forward Plus")
 
@@ -27,6 +28,7 @@ window/size/resizable=true
 
 renderer/rendering_method="forward_plus"
 renderer/rendering_method.mobile="forward_plus"
+renderer/rendering_method.web="gl_compatibility"
 textures/vram_compression/import_etc2_astc=true
 environment/subsurface_scattering/subsurface_scattering_quality=2
 environment/subsurface_scattering/subsurface_scattering_scale=0.08
