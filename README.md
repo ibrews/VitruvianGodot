@@ -44,6 +44,14 @@ Click the **animation** + **expression** buttons (smile / jawopen / talk / surpr
 / frown / angry / blink), the **lighting presets**, and tweak the sliders; **Save
 settings** writes `look_settings.json` (loaded on startup).
 
+## Things to Try
+
+1. **Launch the look-dev tool** — `VitruvianLookDev_v15.exe` or `VitruvianLookDev-macos-universal.zip` from the [v1.1 release](https://github.com/ibrews/VitruvianGodot/releases/tag/v1.1), or `Godot_v4.6 --path godot_project scenes/vitruvian_lookdev.tscn` — the panel is titled "Vitruvian Look-Dev (CC0)", the figure plays the `Idle` clip, and the hint reads "LMB orbit · wheel zoom · RMB/MMB pan".
+2. **Under "Facial expression", click `jawopen`, then `blink`, then `auto`** — the mouth opens with teeth and tongue (`Mouth_Large_Opened`), the lids close (`Eyes_Closed_Max`), and `auto` returns to the resting face with its periodic blink and eye saccades.
+3. **Click `Walk` under "Animation (Mixamo clips)", tick "Auto-turntable (spins model)", then pick "Dramatic" under "Lighting presets"** — the figure walks in place while the model spins, and the lights switch to that preset.
+4. **Press "Save settings", quit, and relaunch** — `look_settings.json` is written both next to the project (the copy in this repo) and under Godot's `user://` folder, and the look-dev loads it at startup; "Load" restores it after further slider changes.
+5. **Press `H` to hide the panel for a clean capture, then render the reel headlessly:** `CINEMA_MOVIE=1 godot --path godot_project scenes/vitruvian_cinematic.tscn --fixed-fps 30 --write-movie out/cine_mov/frame.png` followed by `python blender_prep/_assemble_video.py out/cine_mov out/vitruvian_showcase.mp4 30` — the cinematic auto-quits when the reel ends under `CINEMA_MOVIE`, and the script (needs `cv2`) assembles `frame*.png` into an MP4.
+
 ## Repo layout
 ```
 godot_project/                 Godot 4.6 project (Forward+)
@@ -98,3 +106,7 @@ under Adobe's license. This project's code is MIT. See `NOTICE.md` for full cred
 ## Support
 
 If you like seeing this kind of thing get built and shared, [donations are always welcome](https://www.alexcoulombepresents.com/support) — they buy hardware, render time, and the freedom to keep giving most of this away.
+
+## Credits
+
+Built by **Alex Coulombe Presents** ([ibrews](https://github.com/ibrews)). House style: [acp-style-guide](https://github.com/ibrews/acp-style-guide).
